@@ -33,6 +33,8 @@ const crearTablas = async () => {
         licencia VARCHAR(50),
         placa VARCHAR(20),
         colegio_id INTEGER REFERENCES colegios(id),
+        fecha_inicio_servicio DATE,
+        fecha_fin_servicio DATE,
         activo BOOLEAN DEFAULT true,
         creado_en TIMESTAMP DEFAULT NOW()
       );
