@@ -119,55 +119,114 @@ router.post('/login', async (req, res) => {
     }
 });
 
+const { obtenerCodigoValido, resolverDestinoVinculacion, validarRolParaCodigo, propagarColegioAConductorYPadres } = require('./vinculaciones-logic'); // Separar la lógica para reutilizarla
+
 // POST /api/auth/registro
 router.post('/registro', async (req, res) => {
     const {
         nombre, email, correo, password, contrasena, contraseña, rol, telefono, dui, licencia, placa,
-        fechaInicio, fechaFin
+        fechaInicio, fechaFin, codigo, alumnoNombre, alumnoGrado, colegioNombre
     } = req.body;
+    
     const valorEmail = email || correo;
     const valorPassword = password || contrasena || req.body['contrase\u00f1a'];
     const emailNormalizado = String(valorEmail || '').trim().toLowerCase();
 
     if (!nombre || !emailNormalizado || !valorPassword || !rol) {
-        const missing = [];
-        if (!nombre) missing.push('nombre');
-        if (!emailNormalizado) missing.push('email');
-        if (!valorPassword) missing.push('password');
-        if (!rol) missing.push('rol');
-        return res.status(400).json({
-            error: 'Nombre, email, password y rol son requeridos',
-            detalle: `Faltan los siguientes campos: ${missing.join(', ')}`,
-            recibido: { nombre: !!nombre, email: !!emailNormalizado, password: !!valorPassword, rol: !!rol }
-        });
+        return res.status(400).json({ error: 'Nombre, email, password y rol son requeridos' });
     }
 
-    // Validaciones específicas por rol para garantizar perfil completo desde el inicio
     if (!ROLES_VALIDOS_USUARIO.includes(rol)) {
-        return res.status(400).json({ error: 'Rol inválido para registro público' });
+        return res.status(400).json({ error: 'Rol inválido para registro' });
     }
 
+    const client = await pool.connect();
     try {
-        const existe = await pool.query(
-            `SELECT email FROM usuarios WHERE email = $1
-             UNION
-             SELECT email FROM super_admins WHERE email = $1`,
+        await client.query('BEGIN');
+
+        // 1. Verificar existencia
+        const existe = await client.query(
+            `SELECT email FROM usuarios WHERE email = $1 UNION SELECT email FROM super_admins WHERE email = $1`,
             [emailNormalizado]
         );
-
-        if (existe.rows.length > 0)
+        if (existe.rows.length > 0) {
+            await client.query('ROLLBACK');
             return res.status(400).json({ error: 'El correo ya está registrado' });
+        }
 
+        // 2. Procesar Código de Vinculación (si existe)
+        let colegioId = null;
+        let conductorId = null;
+        let alumnoVinculadoId = null;
+        let codigoData = null;
+
+        if (codigo) {
+            const verificacion = await obtenerCodigoValido(codigo);
+            if (!verificacion.valido) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ error: verificacion.error });
+            }
+
+            codigoData = verificacion.codigo;
+            const destino = await resolverDestinoVinculacion(client, codigoData);
+            colegioId = destino.colegioId;
+            conductorId = destino.conductorId;
+            alumnoVinculadoId = destino.alumnoId;
+
+            if (!validarRolParaCodigo(rol, codigoData.tipo)) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ error: 'El código ingresado no corresponde a tu rol' });
+            }
+        }
+
+        // 3. Crear Usuario
         const passwordHash = await bcrypt.hash(valorPassword, 10);
-
-        const resultado = await pool.query(
-            `INSERT INTO usuarios (nombre, email, password, rol, telefono, dui, licencia, placa, fecha_inicio_servicio, fecha_fin_servicio)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       RETURNING id, nombre, email, rol, telefono, colegio_id, fecha_inicio_servicio, fecha_fin_servicio`,
-            [nombre, emailNormalizado, passwordHash, rol, telefono, dui, licencia, placa, fechaInicio || null, fechaFin || null]
+        const resultadoUsuario = await client.query(
+            `INSERT INTO usuarios (nombre, email, password, rol, telefono, dui, licencia, placa, colegio_id, fecha_inicio_servicio, fecha_fin_servicio)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             RETURNING id, nombre, email, rol, telefono, colegio_id`,
+            [nombre, emailNormalizado, passwordHash, rol, telefono, dui, licencia, placa, colegioId, fechaInicio || null, fechaFin || null]
         );
+        const usuario = resultadoUsuario.rows[0];
 
-        const usuario = resultado.rows[0];
+        // 4. Crear Alumno (si es padre y envió datos)
+        let nuevoAlumno = null;
+        if (rol === 'padre' && alumnoNombre) {
+            let rutaId = null;
+            if (conductorId) {
+                const rutaRes = await client.query('SELECT id FROM rutas WHERE conductor_id = $1 AND activa = true LIMIT 1', [conductorId]);
+                rutaId = rutaRes.rows[0]?.id || null;
+            }
+
+            const alumnoRes = await client.query(
+                `INSERT INTO alumnos (nombre, grado, padre_id, ruta_id, colegio_id, colegio_nombre)
+                 VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+                [alumnoNombre, alumnoGrado || null, usuario.id, rutaId, colegioId, colegioNombre || null]
+            );
+            nuevoAlumno = alumnoRes.rows[0];
+
+            await client.query(`INSERT INTO alumno_padres (alumno_id, padre_id, rol) VALUES ($1, $2, 'principal')`, [nuevoAlumno.id, usuario.id]);
+        }
+
+        // 5. Finalizar Vinculación por Código
+        if (codigoData) {
+            await client.query('UPDATE codigos_invitacion SET usos_actuales = usos_actuales + 1, usado_por = $1, usado_en = NOW() WHERE id = $2', [usuario.id, codigoData.id]);
+            await client.query(
+                `INSERT INTO vinculaciones (tipo, entidad_id, vinculado_por, colegio_id, conductor_id, codigo_usado, estado)
+                 VALUES ($1, $2, $3, $4, $5, $6, 'activo')`,
+                [codigoData.tipo, usuario.id, codigoData.creado_por || 0, colegioId, conductorId, codigo.toUpperCase()]
+            );
+
+            if (codigoData.tipo === 'colegio_admin' && colegioId) {
+                await client.query('UPDATE colegios SET admin_id = $1, activo = true WHERE id = $2', [usuario.id, colegioId]);
+            }
+            if (codigoData.tipo === 'padre_compartido' && alumnoVinculadoId) {
+                await client.query(`INSERT INTO alumno_padres (alumno_id, padre_id, rol) VALUES ($1, $2, 'compartido') ON CONFLICT DO NOTHING`, [alumnoVinculadoId, usuario.id]);
+            }
+        }
+
+        await client.query('COMMIT');
+
         const token = firmarTokenSesion({
             id: usuario.id,
             email: usuario.email,
@@ -177,25 +236,19 @@ router.post('/registro', async (req, res) => {
             colegioId: usuario.colegio_id,
         });
 
-        res.json({
-            mensaje: 'Usuario registrado correctamente',
+        res.status(201).json({
+            mensaje: 'Usuario registrado y vinculado correctamente',
             token,
-            expiresIn: SESSION_EXPIRES_IN,
-            usuario: {
-                id: usuario.id,
-                nombre: usuario.nombre,
-                email: usuario.email,
-                rol: usuario.rol,
-                telefono: usuario.telefono,
-                colegioId: usuario.colegio_id,
-                colegioNombre: null,
-                logoUrl: null,
-            }
+            usuario: { ...usuario, colegioId: usuario.colegio_id },
+            alumno: nuevoAlumno
         });
 
     } catch (error) {
-        console.error('Error registro:', error);
+        await client.query('ROLLBACK');
+        console.error('Error en registro unificado:', error);
         res.status(500).json({ error: 'Error interno del servidor' });
+    } finally {
+        client.release();
     }
 });
 
