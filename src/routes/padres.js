@@ -4,6 +4,7 @@ const pool = require('../database');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { autoNombrarRuta } = require('../utils/geoNaming');
 const { sincronizarPuntoAlumno } = require('../utils/rutaPuntos');
+const { generarCodigoAleatorio } = require('../utils/codigos');
 
 const CONFIG_UI_POR_DEFECTO = {
     mostrarTotalAlumnosHistorial: false,
@@ -164,11 +165,7 @@ router.post('/hijos/:alumnoId/generar-invitacion', authenticateToken, requireRol
         }
 
         // Generar código aleatorio de 8 caracteres
-        const caracteres = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-        let codigo = '';
-        for (let i = 0; i < 8; i++) {
-            codigo += caracteres.charAt(Math.floor(Math.random() * caracteres.length));
-        }
+        const codigo = generarCodigoAleatorio(8);
 
         await pool.query(
             `INSERT INTO codigos_invitacion (codigo, tipo, entidad_id, creado_por, max_usos, expira_en)

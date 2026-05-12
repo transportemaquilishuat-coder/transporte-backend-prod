@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const pool = require('../database');
+const { generarCodigoAleatorio } = require('../utils/codigos');
 
 const parseBoolean = (value, defaultValue = true) => {
     if (typeof value === 'boolean') return value;
@@ -10,15 +11,6 @@ const parseBoolean = (value, defaultValue = true) => {
         if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
     }
     return defaultValue;
-};
-
-const generarCodigo = (longitud = 8) => {
-    const caracteres = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    let codigo = '';
-    for (let i = 0; i < longitud; i++) {
-        codigo += caracteres.charAt(Math.floor(Math.random() * caracteres.length));
-    }
-    return codigo;
 };
 
 const generarPasswordTemporal = (longitud = 10) => {

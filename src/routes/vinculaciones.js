@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 const pool = require('../database');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { SESSION_EXPIRES_IN, firmarTokenSesion } = require('../utils/authTokens');
+const { generarCodigoAleatorio, normalizarCodigo } = require('../utils/codigos');
 const {
     listarColegiosSuperAdmin,
     crearColegioSuperAdmin,
@@ -20,15 +21,6 @@ const {
 // UTILIDADES
 // ============================================
 
-const generarCodigo = (longitud = 8) => {
-    const caracteres = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    let codigo = '';
-    for (let i = 0; i < longitud; i += 1) {
-        codigo += caracteres.charAt(Math.floor(Math.random() * caracteres.length));
-    }
-    return codigo;
-};
-
 const generarPasswordTemporal = (longitud = 10) => {
     const caracteres = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
     let password = '';
@@ -37,12 +29,6 @@ const generarPasswordTemporal = (longitud = 10) => {
     }
     return password;
 };
-
-const normalizarCodigo = (codigo) =>
-    String(codigo || '')
-        .trim()
-        .toUpperCase()
-        .replace(/[^A-Z0-9]/g, '');
 
 const verificarCodigoInterno = async (codigo, tipoRequerido) => {
     const resultado = await pool.query(
@@ -570,7 +556,7 @@ router.get('/admin/conductores', authenticateToken, requireRole('admin'), async 
 
 router.post('/admin/conductores/codigo', authenticateToken, requireRole('admin'), async (req, res) => {
     try {
-        const codigo = generarCodigo(8);
+        const codigo = generarCodigoAleatorio(8);
         const expiraEn = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
         await pool.query(`INSERT INTO codigos_invitacion (codigo, tipo, entidad_id, creado_por, max_usos, expira_en) VALUES ($1, 'colegio_conductor', $2, $3, 1, $4)`,
             [codigo, req.user.colegio_id, req.user.id, expiraEn]);
@@ -637,7 +623,7 @@ router.get('/conductor/padres', authenticateToken, requireRole('conductor'), asy
 
 router.post('/conductor/padres/codigo', authenticateToken, requireRole('conductor'), async (req, res) => {
     try {
-        const codigo = generarCodigo(8);
+        const codigo = generarCodigoAleatorio(8);
         const expiraEn = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
         await pool.query(`INSERT INTO codigos_invitacion (codigo, tipo, entidad_id, creado_por, max_usos, expira_en) VALUES ($1, 'conductor_padre', $2, $2, 1, $3)`,
             [codigo, req.user.id, expiraEn]);
@@ -671,10 +657,37 @@ router.delete('/conductor/padres/:padreId', authenticateToken, requireRole('cond
 
 router.get('/verificar-codigo/:codigo', async (req, res) => {
     try {
-        const resultado = await pool.query(`SELECT c.*, co.nombre as colegio_nombre, u.nombre as conductor_nombre FROM codigos_invitacion c LEFT JOIN colegios co ON co.id = c.entidad_id LEFT JOIN usuarios u ON u.id = c.entidad_id WHERE c.codigo = $1 AND c.activo = true`, [normalizarCodigo(req.params.codigo)]);
-        if (resultado.rows.length === 0) return res.status(404).json({ error: 'No encontrado' });
-        res.json({ valido: true, ...resultado.rows[0] });
-    } catch (error) { res.status(500).json({ error: 'Error' }); }
+        const { codigo } = req.params;
+        const verificacion = await obtenerCodigoValido(codigo);
+
+        if (!verificacion.valido) {
+            return res.status(404).json({ error: verificacion.error || 'Código no encontrado' });
+        }
+
+        const c = verificacion.codigo;
+        let extraInfo = {};
+
+        // Obtener información descriptiva según el tipo
+        if (c.tipo === 'colegio_admin' || c.tipo === 'colegio_conductor') {
+            const colegio = await pool.query('SELECT nombre FROM colegios WHERE id = $1', [c.entidad_id]);
+            extraInfo.colegio_nombre = colegio.rows[0]?.nombre || 'Colegio desconocido';
+        } else if (c.tipo === 'conductor_padre') {
+            const conductor = await pool.query('SELECT nombre FROM usuarios WHERE id = $1', [c.entidad_id]);
+            extraInfo.conductor_nombre = conductor.rows[0]?.nombre || 'Conductor desconocido';
+        } else if (c.tipo === 'padre_compartido') {
+            const alumno = await pool.query('SELECT nombre FROM alumnos WHERE id = $1', [c.entidad_id]);
+            extraInfo.alumno_nombre = alumno.rows[0]?.nombre || 'Alumno desconocido';
+        }
+
+        res.json({
+            valido: true,
+            ...c,
+            ...extraInfo
+        });
+    } catch (error) {
+        console.error('Error verificando código:', error);
+        res.status(500).json({ error: 'Error interno del servidor' });
+    }
 });
 
 router.get('/padre/mis-conductores', authenticateToken, requireRole('padre'), async (req, res) => {
