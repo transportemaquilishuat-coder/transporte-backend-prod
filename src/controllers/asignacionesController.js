@@ -418,3 +418,49 @@ exports.inscribirAlumnoPorConductor = async (req, res) => {
         res.status(500).json({ error: 'Error inscribiendo alumno para el conductor' });
     }
 };
+
+exports.desvincularAlumnoPorConductor = async (req, res) => {
+    const conductorId = Number(req.params.conductorId);
+    const alumnoId = Number(req.params.alumnoId);
+
+    if (!Number.isInteger(conductorId) || !Number.isInteger(alumnoId)) {
+        return res.status(400).json({ error: 'IDs invalidos' });
+    }
+
+    try {
+        // 1. Verificar que el alumno pertenece a una ruta del conductor
+        const checkResult = await pool.query(
+            `SELECT a.id, a.nombre, a.ruta_id
+             FROM alumnos a
+             JOIN rutas r ON r.id = a.ruta_id
+             WHERE a.id = $1 AND r.conductor_id = $2 AND a.activo = true`,
+            [alumnoId, conductorId]
+        );
+
+        if (checkResult.rows.length === 0) {
+            return res.status(403).json({ error: 'No tienes permiso para desvincular a este alumno o no pertenece a tu ruta' });
+        }
+
+        const alumno = checkResult.rows[0];
+        const rutaId = alumno.ruta_id;
+
+        // 2. Desvincular (quitar ruta_id)
+        await pool.query(
+            'UPDATE alumnos SET ruta_id = NULL WHERE id = $1',
+            [alumnoId]
+        );
+
+        // 3. Sincronizar y auto-nombrar ruta
+        if (rutaId) {
+            autoNombrarRuta(rutaId).catch(err => console.error('Error auto-nombrando ruta tras desvincular:', err));
+        }
+
+        res.json({
+            mensaje: `Alumno ${alumno.nombre} desvinculado de la ruta correctamente`,
+            alumnoId
+        });
+    } catch (error) {
+        console.error('Error desvincularAlumnoPorConductor:', error.message);
+        res.status(500).json({ error: 'Error desvinculando alumno' });
+    }
+};
