@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const router = express.Router();
 const pool = require('../database');
+const { obtenerMensajeDiarioHoy, personalizarMensajeParaPadre } = require('../utils/alertas');
 
 const obtenerColegioPorRuta = async (rutaId) => {
     if (!rutaId) {
@@ -152,29 +153,41 @@ router.post('/alerta-bus', async (req, res) => {
     try {
         const colegioRelacionadoId = colegioId || await obtenerColegioPorRuta(rutaId);
 
-        const padres = await pool.query(
-            `SELECT DISTINCT ap.padre_id, u.nombre
+        // 1. Obtener padres con los nombres de sus hijos vinculados a esta ruta
+        const padresHijos = await pool.query(
+            `SELECT ap.padre_id, string_agg(a.nombre, ', ') as hijos_nombres
              FROM alumnos a
              JOIN alumno_padres ap ON ap.alumno_id = a.id
-             JOIN usuarios u ON u.id = ap.padre_id
-             WHERE a.ruta_id = $1 AND a.activo = true`,
+             WHERE a.ruta_id = $1 AND a.activo = true
+             GROUP BY ap.padre_id`,
             [rutaId]
         );
 
-        const tokens = await pool.query(
-            `SELECT tp.token, u.nombre
+        const mapaHijos = {};
+        padresHijos.rows.forEach(p => {
+            mapaHijos[p.padre_id] = p.hijos_nombres;
+        });
+
+        // 2. Obtener tokens de push vinculados a esos padres
+        const tokensPush = await pool.query(
+            `SELECT tp.token, tp.usuario_id
              FROM tokens_push tp
-             JOIN usuarios u ON u.id = tp.usuario_id
              WHERE tp.usuario_id = ANY($1) AND tp.activo = true`,
-            [padres.rows.map((p) => p.padre_id)]
+            [padresHijos.rows.map((p) => p.padre_id)]
         );
 
-        const { titulo, cuerpo, anuncio } = await construirMensajeAlerta({
+        // 3. Determinar el mensaje base (Prioridad: Mensaje Diario > Anuncio Voz > Default)
+        let { titulo, cuerpo, anuncio } = await construirMensajeAlerta({
             colegioId: colegioRelacionadoId,
             minutosRestantes,
         });
 
-        if (tokens.rows.length === 0) {
+        const mensajeDiario = await obtenerMensajeDiarioHoy();
+        if (mensajeDiario && Number(minutosRestantes) === 5) {
+            cuerpo = mensajeDiario;
+        }
+
+        if (tokensPush.rows.length === 0) {
             return res.json({
                 mensaje: 'No hay tokens registrados',
                 mensajeAudio: cuerpo,
@@ -183,14 +196,24 @@ router.post('/alerta-bus', async (req, res) => {
             });
         }
 
-        const mensajes = tokens.rows.map((t) => ({
-            to: t.token,
-            title: titulo,
-            body: cuerpo,
-            sound: 'default',
-            priority: 'high',
-            channelId: 'transporte',
-        }));
+        // 4. Construir mensajes personalizados para cada token
+        const mensajes = tokensPush.rows.map((t) => {
+            const nombresHijos = mapaHijos[t.usuario_id] || 'tu hijo';
+            const cuerpoPersonalizado = personalizarMensajeParaPadre(cuerpo, nombresHijos);
+
+            return {
+                to: t.token,
+                title: titulo,
+                body: cuerpoPersonalizado,
+                sound: 'default',
+                priority: 'high',
+                channelId: 'transporte',
+                data: {
+                    alumnoNombres: nombresHijos,
+                    tipo: 'alerta_bus'
+                }
+            };
+        });
 
         await fetch('https://exp.host/--/api/v2/push/send', {
             method: 'POST',
@@ -199,12 +222,13 @@ router.post('/alerta-bus', async (req, res) => {
         });
 
         res.json({
-            mensaje: `Alerta enviada a ${tokens.rows.length} padres`,
-            mensajeAudio: cuerpo,
+            mensaje: `Alerta enviada a ${tokensPush.rows.length} padres`,
+            mensajeAudio: cuerpo, // El audio base se mantiene para el front si lo usa para TTS genérico
             anuncio,
             colegioId: colegioRelacionadoId,
         });
     } catch (error) {
+        console.error('Error en alerta-bus:', error);
         res.status(500).json({ error: error.message });
     }
 });

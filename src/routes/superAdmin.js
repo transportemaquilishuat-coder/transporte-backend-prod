@@ -16,6 +16,12 @@ const {
 } = require('../controllers/colegiosSuperAdmin');
 
 const { SESSION_EXPIRES_IN, firmarTokenSesion } = require('../utils/authTokens');
+const {
+    TOTAL_MENSAJES_DIARIOS,
+    normalizarMensajesDiarios,
+    completarMensajesDiarios,
+    obtenerMensajeParaDia
+} = require('../utils/alertas');
 
 router.use(authenticateToken, requireRole('super_admin'));
 
@@ -43,23 +49,6 @@ const validarDiasSemana = (diasSemana) =>
     Array.isArray(diasSemana) &&
     diasSemana.every((dia) => Number.isInteger(dia) && dia >= 0 && dia <= 6);
 
-const TOTAL_MENSAJES_DIARIOS = 31;
-
-const normalizarMensajesDiarios = (mensajes, diasDelMes = 31) => {
-    const diasValidos = Math.min(diasDelMes, TOTAL_MENSAJES_DIARIOS);
-    if (!Array.isArray(mensajes) || mensajes.length < diasValidos) {
-        return null;
-    }
-
-    return mensajes.slice(0, diasValidos).map((mensaje) => String(mensaje || '').trim());
-};
-
-const completarMensajesDiarios = (mensajes, diasDelMes = 31) => {
-    const valores = Array.isArray(mensajes) ? mensajes : [];
-    const diasValidos = Math.min(diasDelMes, TOTAL_MENSAJES_DIARIOS);
-    return Array.from({ length: diasValidos }, (_, index) => String(valores[index] || ''));
-};
-
 const parseJsonArray = (valor) => {
     if (!valor) return [];
     if (Array.isArray(valor)) return valor;
@@ -70,11 +59,6 @@ const parseJsonArray = (valor) => {
     } catch (error) {
         return [];
     }
-};
-
-const obtenerMensajeParaDia = (mensajesDiarios, dia, mensajeFallback) => {
-    const mensajeDelDia = String(mensajesDiarios[dia - 1] || '').trim();
-    return mensajeDelDia || mensajeFallback;
 };
 
 const generarPasswordTemporal = (longitud = 10) => {
