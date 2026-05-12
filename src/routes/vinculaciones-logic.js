@@ -54,44 +54,50 @@ const resolverDestinoVinculacion = async (client, codigoData) => {
             return {
                 rol: 'admin',
                 colegioId: codigoData.entidad_id,
-                conductorId: null
+                conductorId: null,
+                desc: 'Administrador de Colegio'
             };
         case 'colegio_conductor':
             return {
                 rol: 'conductor',
                 colegioId: codigoData.entidad_id,
-                conductorId: null
+                conductorId: null,
+                desc: 'Vinculación a Colegio'
             };
         case 'conductor_padre': {
+            // El código apunta al conductor que lo generó
             const conductor = await client.query(
-                'SELECT colegio_id FROM usuarios WHERE id = $1 AND rol = $2 LIMIT 1',
+                'SELECT u.id, u.nombre, u.colegio_id, r.id as ruta_id FROM usuarios u LEFT JOIN rutas r ON r.conductor_id = u.id WHERE u.id = $1 AND u.rol = $2 LIMIT 1',
                 [codigoData.entidad_id, 'conductor']
             );
 
-            const rutaCond = await client.query(
-                'SELECT colegio_id FROM rutas WHERE conductor_id = $1 AND colegio_id IS NOT NULL LIMIT 1',
-                [codigoData.entidad_id]
-            );
+            if (conductor.rows.length === 0) throw new Error('Conductor no encontrado');
 
             return {
                 rol: 'padre',
-                colegioId: conductor.rows[0]?.colegio_id || rutaCond.rows[0]?.colegio_id || null,
-                conductorId: codigoData.entidad_id
+                colegioId: conductor.rows[0].colegio_id,
+                conductorId: conductor.rows[0].id,
+                rutaId: conductor.rows[0].ruta_id,
+                desc: `Ruta de ${conductor.rows[0].nombre}`
             };
         }
         case 'padre_compartido': {
             const alumno = await client.query(
-                'SELECT colegio_id FROM alumnos a LEFT JOIN rutas r ON r.id = a.ruta_id WHERE a.id = $1',
+                'SELECT a.id, a.nombre, a.colegio_id, a.ruta_id FROM alumnos a WHERE a.id = $1',
                 [codigoData.entidad_id]
             );
+            if (alumno.rows.length === 0) throw new Error('Alumno no encontrado');
+
             return {
                 rol: 'padre',
-                colegioId: alumno.rows[0]?.colegio_id || null,
-                alumnoId: codigoData.entidad_id
+                colegioId: alumno.rows[0].colegio_id,
+                alumnoId: alumno.rows[0].id,
+                rutaId: alumno.rows[0].ruta_id,
+                desc: `Seguimiento de ${alumno.rows[0].nombre}`
             };
         }
         default:
-            throw new Error('Tipo de codigo no valido');
+            throw new Error('Tipo de código no válido');
     }
 };
 

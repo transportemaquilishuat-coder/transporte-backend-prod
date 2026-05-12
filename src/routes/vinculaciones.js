@@ -162,58 +162,65 @@ const vincularConCodigoHandler = async (req, res) => {
             return res.status(400).json({ error: verificacion.error });
         }
 
-        const { rol, colegioId, conductorId, alumnoId } = await resolverDestinoVinculacion(client, verificacion.codigo);
+        const destino = await resolverDestinoVinculacion(client, verificacion.codigo);
 
-        if (!validarRolParaCodigo(req.user.rol, verificacion.codigo.tipo) || req.user.rol !== rol) {
+        if (!validarRolParaCodigo(req.user.rol, verificacion.codigo.tipo)) {
             await client.query('ROLLBACK');
             return res.status(400).json({ error: 'Codigo no valido para el rol de tu cuenta' });
         }
 
-        await client.query(
-            'UPDATE usuarios SET colegio_id = COALESCE($1, colegio_id), activo = true WHERE id = $2',
-            [colegioId, req.user.id]
-        );
+        const { colegioId, conductorId, rutaId, alumnoId } = destino;
 
-        if (req.user.rol === 'conductor' && colegioId) {
-            await propagarColegioAConductorYPadres(client, req.user.id, colegioId);
-        }
-
-        if (verificacion.codigo.tipo === 'colegio_admin' && colegioId) {
-            const colegio = await client.query('SELECT admin_id FROM colegios WHERE id = $1', [colegioId]);
-            if (colegio.rows[0]?.admin_id && Number(colegio.rows[0].admin_id) !== Number(req.user.id)) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ error: 'Este colegio ya tiene un administrador asignado' });
-            }
-
-            await client.query('UPDATE colegios SET admin_id = $1, activo = true WHERE id = $2', [req.user.id, colegioId]);
-        }
-
-        if (verificacion.codigo.tipo === 'padre_compartido' && alumnoId) {
+        // 1. Actualizar Colegio del Usuario
+        if (colegioId) {
             await client.query(
-                `INSERT INTO alumno_padres (alumno_id, padre_id, rol)
-                 VALUES ($1, $2, 'compartido')
-                 ON CONFLICT (alumno_id, padre_id) DO NOTHING`,
-                [alumnoId, req.user.id]
+                'UPDATE usuarios SET colegio_id = COALESCE($1, colegio_id), activo = true WHERE id = $2',
+                [colegioId, req.user.id]
             );
         }
 
+        // 2. Lógica de Descubrimiento y Vinculación según Rol
+        if (req.user.rol === 'padre') {
+            // Vincular TODOS los hijos del padre a la ruta descubierta
+            const hijos = await client.query('SELECT id FROM alumnos WHERE padre_id = $1', [req.user.id]);
+            if (hijos.rows.length > 0 && rutaId) {
+                const hijosIds = hijos.rows.map(h => h.id);
+                await client.query(
+                    'UPDATE alumnos SET ruta_id = $1, colegio_id = COALESCE($2, colegio_id) WHERE id = ANY($3::int[])',
+                    [rutaId, colegioId, hijosIds]
+                );
+            }
+        } else if (req.user.rol === 'conductor' && colegioId) {
+            // El conductor se vincula al colegio y propaga a sus alumnos
+            await client.query('UPDATE rutas SET colegio_id = $1 WHERE conductor_id = $2', [colegioId, req.user.id]);
+            await client.query('UPDATE alumnos SET colegio_id = $1 WHERE ruta_id IN (SELECT id FROM rutas WHERE conductor_id = $2)', [colegioId, req.user.id]);
+            await client.query('UPDATE usuarios SET colegio_id = $1 WHERE id IN (SELECT padre_id FROM alumnos WHERE ruta_id IN (SELECT id FROM rutas WHERE conductor_id = $2))', [colegioId, req.user.id]);
+        }
+
+        // 3. Registrar la Vinculación
         await client.query(
             `INSERT INTO vinculaciones (tipo, entidad_id, vinculado_por, colegio_id, conductor_id, codigo_usado, estado)
              VALUES ($1, $2, $3, $4, $5, $6, 'activo')`,
             [verificacion.codigo.tipo, req.user.id, verificacion.codigo.creado_por, colegioId, conductorId, normalizarCodigo(codigo)]
         );
 
+        // 4. Incrementar usos del código
         await client.query(
             'UPDATE codigos_invitacion SET usos_actuales = usos_actuales + 1, usado_por = $1, usado_en = NOW() WHERE id = $2',
             [req.user.id, verificacion.codigo.id]
         );
 
         await client.query('COMMIT');
-        return res.json({ mensaje: 'Vinculacion exitosa' });
+        return res.json({ 
+            mensaje: 'Vinculación exitosa',
+            desc: destino.desc,
+            colegioId,
+            rutaId
+        });
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error('Error vinculando con codigo:', error);
-        return res.status(500).json({ error: 'Error interno' });
+        console.error('Error vinculando con descubrimiento:', error);
+        return res.status(500).json({ error: 'Error interno en la vinculación' });
     } finally {
         client.release();
     }
