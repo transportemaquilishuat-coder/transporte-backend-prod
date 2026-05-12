@@ -190,11 +190,22 @@ io.on('connection', (socket) => {
     });
 
     // 📣 Evento genérico del conductor (Reportar tráfico, pinchazo, etc.)
-    socket.on('conductor:evento', (datos) => {
-        console.log(`[EVENTO] Conductor ${datos.conductorId} en ruta ${datos.rutaId}: ${datos.tipo}`);
+    socket.on('conductor:evento', async (datos) => {
+        console.log(`[EVENTO] Conductor ${datos.conductorId} en ruta ${datos.rutaId}: ${datos.tipo} - ${datos.descripcion}`);
 
         if (datos.rutaId) {
-            // Retransmitir solo a los padres de esa ruta específica
+            // 1. Guardar en base de datos para el historial
+            try {
+                await pool.query(
+                    `INSERT INTO eventos_ruta (ruta_id, conductor_id, tipo, descripcion)
+                     VALUES ($1, $2, $3, $4)`,
+                    [datos.rutaId, datos.conductorId || null, datos.tipo, datos.descripcion || datos.tipo]
+                );
+            } catch (error) {
+                console.error('Error guardando evento de conductor:', error.message);
+            }
+
+            // 2. Retransmitir solo a los padres de esa ruta específica (Tiempo real)
             io.to(`ruta:${datos.rutaId}`).emit('bus:evento', {
                 ...datos,
                 timestamp: new Date().toISOString()
