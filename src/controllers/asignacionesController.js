@@ -74,6 +74,7 @@ const obtenerOCrearRutaConductor = async (conductorId) => {
 
 exports.alumnosPorConductor = async (req, res) => {
     const conductorId = Number(req.params.conductorId);
+    const { turno } = req.query; // 'mañana', 'tarde' o null para ver todos
 
     if (!Number.isInteger(conductorId)) {
         return res.status(400).json({ error: 'conductorId invalido' });
@@ -87,6 +88,10 @@ exports.alumnosPorConductor = async (req, res) => {
             return res.status(404).json({ error: 'Conductor no encontrado' });
         }
 
+        const rutasIds = rutas.map((ruta) => ruta.id);
+
+        // Ajustar la consulta para considerar el turno si se proporciona
+        // El turno filtra tanto la ruta base como los cambios programados
         const alumnosResult = await pool.query(
             `SELECT
                 a.id,
@@ -114,12 +119,14 @@ exports.alumnosPorConductor = async (req, res) => {
                       AND au.fecha = CURRENT_DATE
                 ) AS ausente,
                 pr.nota as "notaProgramacion",
-                (pr.id IS NOT NULL) as "esCambioTemporal"
+                (pr.id IS NOT NULL) as "esCambioTemporal",
+                pr.tipo as "turnoProgramado"
              FROM alumnos a
              LEFT JOIN LATERAL (
                 SELECT * FROM programacion_rutas 
                 WHERE alumno_id = a.id AND fecha = CURRENT_DATE
-                ORDER BY CASE WHEN tipo = 'ambos' THEN 1 ELSE 2 END
+                AND ($2::text IS NULL OR tipo = $2 OR tipo = 'ambos')
+                ORDER BY CASE WHEN tipo = 'ambos' THEN 2 ELSE 1 END
                 LIMIT 1
              ) pr ON true
              WHERE a.activo = true
@@ -128,7 +135,7 @@ exports.alumnosPorConductor = async (req, res) => {
                  (pr.id IS NOT NULL AND pr.ruta_id = ANY($1::int[]))
                )
             ORDER BY a.orden, a.nombre`,
-            [rutas.map((ruta) => ruta.id)]
+            [rutasIds, turno || null]
         );
 
         res.json({
@@ -142,6 +149,7 @@ exports.alumnosPorConductor = async (req, res) => {
             totalAlumnos: alumnosResult.rows.length,
             ausentes: alumnosResult.rows.filter((alumno) => alumno.ausente).length,
             configuracionUi,
+            turnoActual: turno || 'todos'
         });
     } catch (error) {
         console.error('Error alumnosPorConductor:', error.message);
