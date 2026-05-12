@@ -64,6 +64,8 @@ const crearTablas = async () => {
         nombre VARCHAR(100) NOT NULL,
         grado VARCHAR(50),
         ruta_id INTEGER REFERENCES rutas(id),
+        colegio_id INTEGER REFERENCES colegios(id),
+        colegio_nombre VARCHAR(150),
         padre_id INTEGER REFERENCES usuarios(id),
         parada VARCHAR(150),
         latitude DECIMAL(10,8),
@@ -79,6 +81,7 @@ const crearTablas = async () => {
         padre_id INTEGER REFERENCES usuarios(id),
         motivo TEXT,
         fecha DATE DEFAULT CURRENT_DATE,
+        fecha_fin DATE,
         hora TIME DEFAULT CURRENT_TIME,
         creado_en TIMESTAMP DEFAULT NOW()
       );

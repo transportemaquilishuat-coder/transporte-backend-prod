@@ -47,6 +47,7 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
                 a.id, 
                 a.nombre, 
                 a.grado, 
+                COALESCE(a.colegio_nombre, c_fix.nombre) as "colegioNombre",
                 COALESCE(pr.parada, a.parada) as parada, 
                 COALESCE(pr.latitude, a.latitude) as latitude, 
                 COALESCE(pr.longitude, a.longitude) as longitude,
@@ -61,7 +62,16 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
                     AND er.descripcion = 'alumnoId:' || a.id 
                     AND DATE(er.creado_en) = CURRENT_DATE
                 ) as abordado,
-                (pr.id IS NOT NULL) as "tieneProgramacionHoy"
+                (pr.id IS NOT NULL) as "tieneProgramacionHoy",
+                -- Promedios semanales (HH:MM)
+                (SELECT TO_CHAR(AVG(creado_en::time), 'HH24:MI') 
+                 FROM eventos_ruta 
+                 WHERE tipo = 'abordado' AND descripcion = 'alumnoId:' || a.id
+                   AND creado_en > NOW() - INTERVAL '7 days') as "promedioRecogida",
+                (SELECT TO_CHAR(AVG(creado_en::time), 'HH24:MI') 
+                 FROM eventos_ruta 
+                 WHERE tipo = 'fin_ruta' AND ruta_id = COALESCE(pr.ruta_id, r.id)
+                   AND creado_en > NOW() - INTERVAL '7 days') as "promedioLlegada"
             FROM alumnos a
             JOIN alumno_padres ap ON ap.alumno_id = a.id
             LEFT JOIN LATERAL (
@@ -71,6 +81,7 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
                 LIMIT 1
             ) pr ON true
             LEFT JOIN rutas r ON r.id = a.ruta_id
+            LEFT JOIN colegios c_fix ON c_fix.id = a.colegio_id
             LEFT JOIN usuarios u ON u.id = r.conductor_id
             LEFT JOIN rutas nr ON nr.id = pr.ruta_id
             LEFT JOIN usuarios nu ON nu.id = nr.conductor_id
@@ -91,7 +102,7 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
 router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('padre'), async (req, res) => {
     const padreId = req.user.id;
     const alumnoId = Number(req.params.alumnoId);
-    const { parada, latitude, longitude } = req.body;
+    const { parada, latitude, longitude, aplicarATodos = false } = req.body;
 
     if (!Number.isInteger(alumnoId)) {
         return res.status(400).json({ error: 'alumnoId invalido' });
@@ -101,52 +112,71 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
         return res.status(400).json({ error: 'latitude y longitude son requeridos' });
     }
 
+    const client = await pool.connect();
     try {
-        const actual = await pool.query(
+        await client.query('BEGIN');
+
+        // 1. Verificar que el alumno pertenece al padre
+        const actual = await client.query(
             `SELECT a.id, a.nombre, a.ruta_id, a.latitude, a.longitude
              FROM alumnos a
              JOIN alumno_padres ap ON ap.alumno_id = a.id
-             WHERE a.id = $1
-               AND ap.padre_id = $2
-               AND a.activo = true`,
+             WHERE a.id = $1 AND ap.padre_id = $2 AND a.activo = true`,
             [alumnoId, padreId]
         );
 
         if (actual.rows.length === 0) {
+            await client.query('ROLLBACK');
             return res.status(404).json({ error: 'Alumno no encontrado para este padre' });
         }
 
-        const alumno = actual.rows[0];
+        const alumnoPrincipal = actual.rows[0];
 
-        if (alumno.latitude !== null && alumno.longitude !== null) {
-            return res.status(409).json({
-                error: 'El punto de recogida ya fue definido. Para cambiarlo, notifica al conductor.',
-            });
+        // 2. Identificar qué alumnos actualizar
+        let idsAActualizar = [alumnoId];
+        if (aplicarATodos) {
+            const otrosHijos = await client.query(
+                'SELECT alumno_id FROM alumno_padres WHERE padre_id = $1',
+                [padreId]
+            );
+            idsAActualizar = otrosHijos.rows.map(h => h.alumno_id);
         }
 
-        const resultado = await pool.query(
-            `UPDATE alumnos
-             SET parada = $1,
-                 latitude = $2,
-                 longitude = $3
-             WHERE id = $4
-             RETURNING id, nombre, grado, ruta_id AS "rutaId", padre_id AS "padreId", parada, latitude, longitude, orden, activo`,
-            [parada || `Punto ${Number(latitude).toFixed(5)}, ${Number(longitude).toFixed(5)}`, latitude, longitude, alumnoId]
+        const paradaFinal = parada || `Punto ${Number(latitude).toFixed(5)}, ${Number(longitude).toFixed(5)}`;
+
+        // 3. Actualizar alumnos
+        await client.query(
+            `UPDATE alumnos 
+             SET parada = $1, latitude = $2, longitude = $3 
+             WHERE id = ANY($4::int[])`,
+            [paradaFinal, latitude, longitude, idsAActualizar]
         );
 
-        await sincronizarPuntoAlumno(alumnoId);
-
-        if (alumno.ruta_id) {
-            autoNombrarRuta(alumno.ruta_id).catch(err => console.error('Error auto-nombrando ruta:', err));
+        // 4. Sincronizar puntos y rutas
+        for (const id of idsAActualizar) {
+            await sincronizarPuntoAlumno(id);
+            
+            // Obtener ruta_id para auto-nombrar
+            const rId = await client.query('SELECT ruta_id FROM alumnos WHERE id = $1', [id]);
+            if (rId.rows[0]?.ruta_id) {
+                autoNombrarRuta(rId.rows[0].ruta_id).catch(e => console.error('Error auto-nombrando:', e));
+            }
         }
 
+        await client.query('COMMIT');
+
         res.json({
-            mensaje: 'Punto de recogida definido',
-            alumno: resultado.rows[0],
+            mensaje: aplicarATodos 
+                ? 'Punto de recogida actualizado para todos los hijos' 
+                : 'Punto de recogida definido correctamente',
+            idsActualizados: idsAActualizar
         });
     } catch (error) {
+        await client.query('ROLLBACK');
         console.error('Error guardando punto de recogida:', error);
         res.status(500).json({ error: 'Error interno del servidor' });
+    } finally {
+        client.release();
     }
 });
 

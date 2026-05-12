@@ -116,7 +116,7 @@ exports.alumnosPorConductor = async (req, res) => {
                     SELECT 1
                     FROM ausencias au
                     WHERE au.alumno_id = a.id
-                      AND au.fecha = CURRENT_DATE
+                      AND CURRENT_DATE BETWEEN au.fecha AND COALESCE(au.fecha_fin, au.fecha)
                 ) AS ausente,
                 pr.nota as "notaProgramacion",
                 (pr.id IS NOT NULL) as "esCambioTemporal",
@@ -424,6 +424,64 @@ exports.inscribirAlumnoPorConductor = async (req, res) => {
     } catch (error) {
         console.error('Error inscribirAlumnoPorConductor:', error.message);
         res.status(500).json({ error: 'Error inscribiendo alumno para el conductor' });
+    }
+};
+
+exports.reportarAusenciaMultiple = async (req, res) => {
+    const { alumnosIds, motivo, dias = 1 } = req.body;
+
+    if (!Array.isArray(alumnosIds) || alumnosIds.length === 0) {
+        return res.status(400).json({ error: 'alumnosIds debe ser un array no vacío' });
+    }
+
+    try {
+        const idsValidos = alumnosIds.filter(id => Number.isInteger(Number(id)));
+        if (idsValidos.length === 0) return res.status(400).json({ error: 'IDs invalidos' });
+
+        const fechaInicio = new Date();
+        const fechaFin = new Date();
+        fechaFin.setDate(fechaFin.getDate() + (Number(dias) - 1));
+
+        const resultados = [];
+        for (const alumnoId of idsValidos) {
+            // Verificar existencia
+            const alumnoRes = await pool.query('SELECT padre_id, ruta_id, nombre FROM alumnos WHERE id = $1', [alumnoId]);
+            if (alumnoRes.rows.length === 0) continue;
+
+            const alumno = alumnoRes.rows[0];
+
+            // Insertar o actualizar ausencia
+            const resIns = await pool.query(
+                `INSERT INTO ausencias (alumno_id, padre_id, motivo, fecha, fecha_fin, hora)
+                 VALUES ($1, $2, $3, $4, $5, CURRENT_TIME)
+                 RETURNING *`,
+                [alumnoId, alumno.padre_id, motivo || 'Ausencia múltiple', fechaInicio, fechaFin]
+            );
+
+            resultados.push({
+                alumnoId,
+                nombre: alumno.nombre,
+                fechaInicio,
+                fechaFin
+            });
+
+            // Emitir por socket si aplica
+            if (req.io && alumno.ruta_id) {
+                req.io.to(`ruta:${alumno.ruta_id}`).emit('alumno:ausencia', {
+                    alumnoId,
+                    ausente: true,
+                    mensaje: `Ausencia programada: ${alumno.nombre} (${dias} días)`
+                });
+            }
+        }
+
+        res.json({
+            mensaje: `Ausencia reportada para ${resultados.length} alumnos por ${dias} días`,
+            detalles: resultados
+        });
+    } catch (error) {
+        console.error('Error reportarAusenciaMultiple:', error.message);
+        res.status(500).json({ error: 'Error reportando ausencias múltiples' });
     }
 };
 

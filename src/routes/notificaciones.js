@@ -153,12 +153,18 @@ router.post('/alerta-bus', async (req, res) => {
     try {
         const colegioRelacionadoId = colegioId || await obtenerColegioPorRuta(rutaId);
 
-        // 1. Obtener padres con los nombres de sus hijos vinculados a esta ruta
+        // 1. Obtener padres con los nombres de sus hijos vinculados a esta ruta (que no estén ausentes hoy)
         const padresHijos = await pool.query(
             `SELECT ap.padre_id, string_agg(a.nombre, ', ') as hijos_nombres
              FROM alumnos a
              JOIN alumno_padres ap ON ap.alumno_id = a.id
-             WHERE a.ruta_id = $1 AND a.activo = true
+             WHERE a.ruta_id = $1 
+               AND a.activo = true
+               AND NOT EXISTS (
+                 SELECT 1 FROM ausencias au 
+                 WHERE au.alumno_id = a.id 
+                 AND CURRENT_DATE BETWEEN au.fecha AND COALESCE(au.fecha_fin, au.fecha)
+               )
              GROUP BY ap.padre_id`,
             [rutaId]
         );
