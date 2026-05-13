@@ -59,16 +59,16 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
                 EXISTS (
                     SELECT 1 FROM eventos_ruta er 
                     WHERE er.tipo = 'abordado' 
-                    AND er.descripcion = 'alumnoId:' || a.id 
+                    AND er.descripcion = CONCAT('alumnoId:', a.id)
                     AND DATE(er.creado_en) = CURRENT_DATE
                 ) as abordado,
                 (pr.id IS NOT NULL) as "tieneProgramacionHoy",
-                -- Promedios semanales (HH:MM)
-                (SELECT TO_CHAR(AVG(creado_en::time), 'HH24:MI') 
+                -- Promedios semanales (HH:MM) - Usamos intervalos para promediar tiempos en Postgres
+                (SELECT TO_CHAR(AVG(creado_en::time - '00:00:00'::time), 'HH24:MI') 
                  FROM eventos_ruta 
-                 WHERE tipo = 'abordado' AND descripcion = 'alumnoId:' || a.id
+                 WHERE tipo = 'abordado' AND descripcion = CONCAT('alumnoId:', a.id)
                    AND creado_en > NOW() - INTERVAL '7 days') as "promedioRecogida",
-                (SELECT TO_CHAR(AVG(creado_en::time), 'HH24:MI') 
+                (SELECT TO_CHAR(AVG(creado_en::time - '00:00:00'::time), 'HH24:MI') 
                  FROM eventos_ruta 
                  WHERE tipo = 'fin_ruta' AND ruta_id = COALESCE(pr.ruta_id, r.id)
                    AND creado_en > NOW() - INTERVAL '7 days') as "promedioLlegada"
