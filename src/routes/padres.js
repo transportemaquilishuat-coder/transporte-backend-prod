@@ -97,6 +97,50 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
     }
 });
 
+// PUT /api/padres/hijos/:alumnoId
+// Permite al padre editar la información básica de su hijo
+router.put('/hijos/:alumnoId', authenticateToken, requireRole('padre'), async (req, res) => {
+    const padreId = req.user.id;
+    const alumnoId = Number(req.params.alumnoId);
+    const { nombre, grado, colegioNombre, direccion } = req.body;
+
+    if (!Number.isInteger(alumnoId)) {
+        return res.status(400).json({ error: 'alumnoId invalido' });
+    }
+
+    try {
+        // 1. Verificar pertenencia
+        const check = await pool.query(
+            'SELECT 1 FROM alumno_padres WHERE alumno_id = $1 AND padre_id = $2',
+            [alumnoId, padreId]
+        );
+
+        if (check.rows.length === 0) {
+            return res.status(403).json({ error: 'No tienes permiso para editar a este alumno' });
+        }
+
+        // 2. Actualizar datos
+        const resultado = await pool.query(
+            `UPDATE alumnos 
+             SET nombre = COALESCE($1, nombre),
+                 grado = COALESCE($2, grado),
+                 colegio_nombre = COALESCE($3, colegio_nombre),
+                 parada = COALESCE($4, parada)
+             WHERE id = $5
+             RETURNING id, nombre, grado, colegio_nombre as "colegioNombre", parada as direccion`,
+            [nombre, grado, colegioNombre, direccion, alumnoId]
+        );
+
+        res.json({
+            mensaje: 'Información del alumno actualizada correctamente',
+            alumno: resultado.rows[0]
+        });
+    } catch (error) {
+        console.error('Error editando alumno:', error);
+        res.status(500).json({ error: 'Error interno del servidor' });
+    }
+});
+
 // PUT /api/padres/hijos/:alumnoId/punto-recogida
 // El padre fija el punto una sola vez. Cambios posteriores deben gestionarse con conductor/admin.
 router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('padre'), async (req, res) => {
