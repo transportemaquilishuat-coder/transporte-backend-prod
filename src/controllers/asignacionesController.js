@@ -368,7 +368,6 @@ exports.inscribirAlumnoPorConductor = async (req, res) => {
         turno_estudio,
         turnoEstudio,
     } = req.body;
-    const conductorId = Number(req.params.conductorId);
 
     if (!Number.isInteger(conductorId)) {
         return res.status(400).json({ error: 'conductorId invalido' });
