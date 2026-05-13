@@ -150,7 +150,7 @@ router.post('/registro-con-codigo', (req, res) => {
 });
 
 const vincularConCodigoHandler = async (req, res) => {
-    const { codigo } = req.body;
+    const { codigo, alumno } = req.body;
     if (!codigo) return res.status(400).json({ error: 'El codigo es requerido' });
 
     const client = await pool.connect();
@@ -179,16 +179,42 @@ const vincularConCodigoHandler = async (req, res) => {
             );
         }
 
-        // 2. Lógica de Descubrimiento y Vinculación según Rol
+        // 2. Lógica de Vinculación según Rol
+        let studentResponse = null;
         if (req.user.rol === 'padre') {
-            // Vincular TODOS los hijos del padre a la ruta descubierta
-            const hijos = await client.query('SELECT id FROM alumnos WHERE padre_id = $1', [req.user.id]);
-            if (hijos.rows.length > 0 && rutaId) {
-                const hijosIds = hijos.rows.map(h => h.id);
-                await client.query(
-                    'UPDATE alumnos SET ruta_id = $1, colegio_id = COALESCE($2, colegio_id) WHERE id = ANY($3::int[])',
-                    [rutaId, colegioId, hijosIds]
+            if (alumno && alumno.nombre) {
+                // ESCENARIO 1: Crear nuevo alumno vinculado directamente
+                const turnoRaw = alumno.turno_estudio || alumno.turnoEstudio || 'matutino';
+                const turnoMapeado = (turnoRaw === 'mañana') ? 'matutino' : (turnoRaw === 'tarde') ? 'vespertino' : turnoRaw;
+
+                const nuevoAlumnoRes = await client.query(
+                    `INSERT INTO alumnos (nombre, grado, padre_id, ruta_id, colegio_id, turno_estudio, padre_email, activo)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, true) RETURNING *`,
+                    [alumno.nombre, alumno.grado || null, req.user.id, rutaId, colegioId, turnoMapeado, req.user.email]
                 );
+                studentResponse = nuevoAlumnoRes.rows[0];
+                
+                await client.query(`INSERT INTO alumno_padres (alumno_id, padre_id, rol) VALUES ($1, $2, 'principal') ON CONFLICT DO NOTHING`, [studentResponse.id, req.user.id]);
+            } else {
+                // ESCENARIO 2: Vincular alumnos existentes
+                const hijos = await client.query('SELECT id, nombre FROM alumnos WHERE padre_id = $1', [req.user.id]);
+                
+                if (hijos.rows.length === 0) {
+                    await client.query('ROLLBACK');
+                    return res.status(400).json({ 
+                        error: 'Información del estudiante requerida', 
+                        infoMissing: true 
+                    });
+                }
+
+                if (rutaId) {
+                    const hijosIds = hijos.rows.map(h => h.id);
+                    await client.query(
+                        'UPDATE alumnos SET ruta_id = $1, colegio_id = COALESCE($2, colegio_id) WHERE id = ANY($3::int[])',
+                        [rutaId, colegioId, hijosIds]
+                    );
+                }
+                studentResponse = hijos.rows[0];
             }
         } else if (req.user.rol === 'conductor' && colegioId) {
             // El conductor se vincula al colegio y propaga a sus alumnos
@@ -212,10 +238,12 @@ const vincularConCodigoHandler = async (req, res) => {
 
         await client.query('COMMIT');
         return res.json({ 
+            success: true,
             mensaje: 'Vinculación exitosa',
-            desc: destino.desc,
+            desc: studentResponse ? `Vinculado a ${studentResponse.nombre}` : (destino.desc || 'Vinculación completada'),
             colegioId,
-            rutaId
+            rutaId,
+            student: studentResponse
         });
     } catch (error) {
         await client.query('ROLLBACK');
