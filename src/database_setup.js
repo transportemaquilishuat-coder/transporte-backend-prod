@@ -72,11 +72,13 @@ const crearTablas = async () => {
         longitude DECIMAL(11,8),
         orden INTEGER,
         turno_estudio VARCHAR(20) NOT NULL DEFAULT 'matutino',
+        padre_email VARCHAR(100),
         activo BOOLEAN DEFAULT true,
         creado_en TIMESTAMP DEFAULT NOW()
       );
 
       ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS turno_estudio VARCHAR(20) NOT NULL DEFAULT 'matutino';
+      ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS padre_email VARCHAR(100);
 
       CREATE TABLE IF NOT EXISTS ausencias (
         id SERIAL PRIMARY KEY,

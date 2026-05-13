@@ -360,6 +360,7 @@ exports.inscribirAlumnoPorConductor = async (req, res) => {
         grado,
         ruta_id,
         padre_id,
+        padreEmail,
         parada,
         orden,
         latitude,
@@ -367,6 +368,7 @@ exports.inscribirAlumnoPorConductor = async (req, res) => {
         turno_estudio,
         turnoEstudio,
     } = req.body;
+    const conductorId = Number(req.params.conductorId);
 
     if (!Number.isInteger(conductorId)) {
         return res.status(400).json({ error: 'conductorId invalido' });
@@ -383,7 +385,7 @@ exports.inscribirAlumnoPorConductor = async (req, res) => {
         }
 
         const rutaResult = await pool.query(
-            `SELECT id, nombre
+            `SELECT id, nombre, colegio_id
              FROM rutas
              WHERE id = $1 AND conductor_id = $2 AND activa = true`,
             [ruta_id, conductorId]
@@ -393,32 +395,47 @@ exports.inscribirAlumnoPorConductor = async (req, res) => {
             return res.status(403).json({ error: 'El conductor no tiene permisos sobre esta ruta' });
         }
 
+        const colegioId = rutaResult.rows[0].colegio_id;
+
+        // Intentar vincular por email si se proporciona
+        let padreIdFinal = padre_id || null;
+        const emailNormalizado = padreEmail ? String(padreEmail).trim().toLowerCase() : null;
+
+        if (!padreIdFinal && emailNormalizado) {
+            const padreRes = await pool.query('SELECT id FROM usuarios WHERE LOWER(email) = $1 AND rol = $2', [emailNormalizado, 'padre']);
+            if (padreRes.rows.length > 0) {
+                padreIdFinal = padreRes.rows[0].id;
+            }
+        }
+
         const turnoRaw = turno_estudio || turnoEstudio || 'matutino';
         const turnoMapeado = (turnoRaw === 'mañana') ? 'matutino' : (turnoRaw === 'tarde') ? 'vespertino' : turnoRaw;
 
         const resultado = await pool.query(
-            `INSERT INTO alumnos (nombre, grado, ruta_id, padre_id, parada, latitude, longitude, orden, turno_estudio)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             RETURNING id, nombre, grado, ruta_id AS "rutaId", padre_id AS "padreId", parada, latitude, longitude, orden, activo, creado_en, turno_estudio`,
+            `INSERT INTO alumnos (nombre, grado, ruta_id, padre_id, padre_email, parada, latitude, longitude, orden, turno_estudio, colegio_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             RETURNING id, nombre, grado, ruta_id AS "rutaId", padre_id AS "padreId", padre_email AS "padreEmail", parada, latitude, longitude, orden, activo, creado_en, turno_estudio`,
             [
                 nombre,
                 grado ?? null,
                 ruta_id,
-                padre_id ?? null,
+                padreIdFinal,
+                emailNormalizado,
                 parada ?? null,
                 latitude ?? null,
                 longitude ?? null,
                 orden ?? null,
                 turnoMapeado,
+                colegioId
             ]
         );
 
-        if (padre_id) {
+        if (padreIdFinal) {
             await pool.query(
                 `INSERT INTO alumno_padres (alumno_id, padre_id, rol)
                  VALUES ($1, $2, 'principal')
                  ON CONFLICT (alumno_id, padre_id) DO NOTHING`,
-                [resultado.rows[0].id, padre_id]
+                [resultado.rows[0].id, padreIdFinal]
             );
         }
 

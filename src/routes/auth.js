@@ -203,13 +203,27 @@ router.post('/registro', async (req, res) => {
             const turnoMapeado = (turnoRaw === 'mañana') ? 'matutino' : (turnoRaw === 'tarde') ? 'vespertino' : turnoRaw;
 
             const alumnoRes = await client.query(
-                `INSERT INTO alumnos (nombre, grado, padre_id, ruta_id, colegio_id, colegio_nombre, turno_estudio)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-                [alumnoNombre, alumnoGrado || null, usuario.id, rutaId, colegioId, colegioNombre || null, turnoMapeado]
+                `INSERT INTO alumnos (nombre, grado, padre_id, ruta_id, colegio_id, colegio_nombre, turno_estudio, padre_email)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+                [alumnoNombre, alumnoGrado || null, usuario.id, rutaId, colegioId, colegioNombre || null, turnoMapeado, emailNormalizado]
             );
             nuevoAlumno = alumnoRes.rows[0];
 
             await client.query(`INSERT INTO alumno_padres (alumno_id, padre_id, rol) VALUES ($1, $2, 'principal')`, [nuevoAlumno.id, usuario.id]);
+        }
+
+        // 4.5. Vincular Alumnos Huérfanos por Email
+        if (rol === 'padre') {
+            const huerfanos = await client.query(
+                `UPDATE alumnos SET padre_id = $1 WHERE LOWER(padre_email) = $2 AND padre_id IS NULL RETURNING id`,
+                [usuario.id, emailNormalizado]
+            );
+            for (const huerfano of huerfanos.rows) {
+                await client.query(
+                    `INSERT INTO alumno_padres (alumno_id, padre_id, rol) VALUES ($1, $2, 'principal') ON CONFLICT DO NOTHING`,
+                    [huerfano.id, usuario.id]
+                );
+            }
         }
 
         // 5. Finalizar Vinculación por Código
