@@ -11,6 +11,12 @@ const CONFIG_UI_POR_DEFECTO = {
     mostrarLogoColegioInicio: true,
 };
 
+const tieneTexto = (valor) => valor !== null && valor !== undefined && String(valor).trim() !== '';
+const coordenadaIgual = (actual, nueva) => {
+    if (actual === null || actual === undefined || nueva === null || nueva === undefined) return false;
+    return Math.abs(Number(actual) - Number(nueva)) < 0.000001;
+};
+
 const obtenerConfiguracionPadre = async () => {
     const resultado = await pool.query(
         `SELECT clave, valor
@@ -111,12 +117,23 @@ router.put('/hijos/:alumnoId', authenticateToken, requireRole('padre'), async (r
     try {
         // 1. Verificar pertenencia
         const check = await pool.query(
-            'SELECT 1 FROM alumno_padres WHERE alumno_id = $1 AND padre_id = $2',
+            `SELECT a.parada
+             FROM alumnos a
+             JOIN alumno_padres ap ON ap.alumno_id = a.id
+             WHERE a.id = $1 AND ap.padre_id = $2 AND a.activo = true`,
             [alumnoId, padreId]
         );
 
         if (check.rows.length === 0) {
             return res.status(403).json({ error: 'No tienes permiso para editar a este alumno' });
+        }
+
+        if (direccion !== undefined && tieneTexto(check.rows[0].parada) && direccion !== check.rows[0].parada) {
+            return res.status(409).json({
+                error: 'El cambio de direccion requiere coordinacion con el conductor',
+                codigo: 'CAMBIO_DIRECCION_REQUIERE_APROBACION',
+                mensaje: 'Coordina el cambio de direccion con el conductor. El flujo de solicitud pendiente de aprobacion aun no esta disponible.'
+            });
         }
 
         // 2. Actualizar datos
@@ -125,7 +142,10 @@ router.put('/hijos/:alumnoId', authenticateToken, requireRole('padre'), async (r
              SET nombre = COALESCE($1, nombre),
                  grado = COALESCE($2, grado),
                  colegio_nombre = COALESCE($3, colegio_nombre),
-                 parada = COALESCE($4, parada)
+                 parada = CASE
+                    WHEN (parada IS NULL OR BTRIM(parada) = '') AND $4 IS NOT NULL THEN $4
+                    ELSE parada
+                 END
              WHERE id = $5
              RETURNING id, nombre, grado, colegio_nombre as "colegioNombre", parada as direccion`,
             [nombre, grado, colegioNombre, direccion, alumnoId]
@@ -137,6 +157,40 @@ router.put('/hijos/:alumnoId', authenticateToken, requireRole('padre'), async (r
         });
     } catch (error) {
         console.error('Error editando alumno:', error);
+        res.status(500).json({ error: 'Error interno del servidor' });
+    }
+});
+
+// POST /api/padres/hijos/:alumnoId/solicitudes-cambio-ruta
+// Flujo futuro: solicitud pendiente de aprobacion del conductor.
+router.post('/hijos/:alumnoId/solicitudes-cambio-ruta', authenticateToken, requireRole('padre'), async (req, res) => {
+    const padreId = req.user.id;
+    const alumnoId = Number(req.params.alumnoId);
+
+    if (!Number.isInteger(alumnoId)) {
+        return res.status(400).json({ error: 'alumnoId invalido' });
+    }
+
+    try {
+        const check = await pool.query(
+            `SELECT 1
+             FROM alumnos a
+             JOIN alumno_padres ap ON ap.alumno_id = a.id
+             WHERE a.id = $1 AND ap.padre_id = $2 AND a.activo = true`,
+            [alumnoId, padreId]
+        );
+
+        if (check.rows.length === 0) {
+            return res.status(403).json({ error: 'No tienes permiso para solicitar cambios para este alumno' });
+        }
+
+        return res.status(501).json({
+            error: 'Flujo de solicitud de cambio de ruta no implementado',
+            codigo: 'SOLICITUD_CAMBIO_RUTA_NO_IMPLEMENTADA',
+            mensaje: 'Por ahora coordina el cambio de direccion o ruta directamente con el conductor.'
+        });
+    } catch (error) {
+        console.error('Error en solicitud de cambio de ruta:', error);
         res.status(500).json({ error: 'Error interno del servidor' });
     }
 });
@@ -162,7 +216,7 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
 
         // 1. Verificar que el alumno pertenece al padre
         const actual = await client.query(
-            `SELECT a.id, a.nombre, a.ruta_id, a.latitude, a.longitude
+            `SELECT a.id, a.nombre, a.ruta_id, a.parada, a.latitude, a.longitude
              FROM alumnos a
              JOIN alumno_padres ap ON ap.alumno_id = a.id
              WHERE a.id = $1 AND ap.padre_id = $2 AND a.activo = true`,
@@ -174,26 +228,63 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
             return res.status(404).json({ error: 'Alumno no encontrado para este padre' });
         }
 
-        const alumnoPrincipal = actual.rows[0];
-
         // 2. Identificar qué alumnos actualizar
         let idsAActualizar = [alumnoId];
         if (aplicarATodos) {
             const otrosHijos = await client.query(
-                'SELECT alumno_id FROM alumno_padres WHERE padre_id = $1',
+                `SELECT a.id AS alumno_id
+                 FROM alumnos a
+                 JOIN alumno_padres ap ON ap.alumno_id = a.id
+                 WHERE ap.padre_id = $1 AND a.activo = true`,
                 [padreId]
             );
             idsAActualizar = otrosHijos.rows.map(h => h.alumno_id);
         }
 
-        const paradaFinal = parada || `Punto ${Number(latitude).toFixed(5)}, ${Number(longitude).toFixed(5)}`;
+        const paradaSolicitada = tieneTexto(parada) ? String(parada) : null;
+        const paradaGenerada = `Punto ${Number(latitude).toFixed(5)}, ${Number(longitude).toFixed(5)}`;
+
+        const alumnosAActualizar = aplicarATodos
+            ? await client.query(
+                `SELECT id, nombre, parada, latitude, longitude
+                 FROM alumnos
+                 WHERE id = ANY($1::int[])`,
+                [idsAActualizar]
+            )
+            : actual;
+
+        const cambiosBloqueados = alumnosAActualizar.rows.filter((alumno) => {
+            const cambiaParada = paradaSolicitada !== null && tieneTexto(alumno.parada) && paradaSolicitada !== alumno.parada;
+            const cambiaLatitud = alumno.latitude !== null && !coordenadaIgual(alumno.latitude, latitude);
+            const cambiaLongitud = alumno.longitude !== null && !coordenadaIgual(alumno.longitude, longitude);
+            return cambiaParada || cambiaLatitud || cambiaLongitud;
+        });
+
+        if (cambiosBloqueados.length > 0) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({
+                error: 'El cambio de punto de recogida requiere coordinacion con el conductor',
+                codigo: 'CAMBIO_PUNTO_RECOGIDA_REQUIERE_APROBACION',
+                mensaje: 'La primera configuracion de direccion y geoposicion no requiere aprobacion. Para modificar un punto ya definido, coordina el cambio con el conductor.',
+                alumnos: cambiosBloqueados.map((alumno) => ({
+                    id: alumno.id,
+                    nombre: alumno.nombre
+                }))
+            });
+        }
 
         // 3. Actualizar alumnos
         await client.query(
             `UPDATE alumnos 
-             SET parada = $1, latitude = $2, longitude = $3 
-             WHERE id = ANY($4::int[])`,
-            [paradaFinal, latitude, longitude, idsAActualizar]
+             SET parada = CASE
+                    WHEN $1 IS NOT NULL THEN $1
+                    WHEN parada IS NULL OR BTRIM(parada) = '' THEN $2
+                    ELSE parada
+                 END,
+                 latitude = COALESCE(latitude, $3),
+                 longitude = COALESCE(longitude, $4)
+             WHERE id = ANY($5::int[])`,
+            [paradaSolicitada, paradaGenerada, latitude, longitude, idsAActualizar]
         );
 
         // 4. Sincronizar puntos y rutas
