@@ -309,9 +309,9 @@ const obtenerOCrearAlumno = async (client, rutaId, padreId) => {
 
     const creado = await client.query(
         `INSERT INTO alumnos
-            (nombre, grado, ruta_id, padre_id, parada, latitude, longitude, orden, activo)
+            (nombre, grado, ruta_id, padre_id, parada, latitude, longitude, orden, activo, turno_estudio)
          VALUES
-            ($1, 'Primer grado', $2, $3, $4, 13.69294, -89.21819, 1, true)
+            ($1, 'Primer grado', $2, $3, $4, 13.69294, -89.21819, 1, true, 'matutino')
          RETURNING id`,
         [DEV_ALUMNO, rutaId, padreId, DEV_PARADA]
     );

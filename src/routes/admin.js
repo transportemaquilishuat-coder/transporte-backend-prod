@@ -75,14 +75,16 @@ router.get('/alumnos', async (req, res) => {
 });
 
 router.post('/alumnos', async (req, res) => {
-    const { nombre, grado, ruta_id, padre_id, parada, orden, latitude, longitude } = req.body;
+    const { nombre, grado, ruta_id, padre_id, parada, orden, latitude, longitude, turno_estudio, turnoEstudio } = req.body;
     try {
-        const resultado = await pool.query(
-            `INSERT INTO alumnos (nombre, grado, ruta_id, padre_id, parada, latitude, longitude, orden)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-            [nombre, grado, ruta_id, padre_id, parada, latitude ?? null, longitude ?? null, orden]
-        );
+        const turnoRaw = turno_estudio || turnoEstudio || 'matutino';
+        const turnoMapeado = (turnoRaw === 'mañana') ? 'matutino' : (turnoRaw === 'tarde') ? 'vespertino' : turnoRaw;
 
+        const resultado = await pool.query(
+            `INSERT INTO alumnos (nombre, grado, ruta_id, padre_id, parada, latitude, longitude, orden, turno_estudio)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+            [nombre, grado, ruta_id, padre_id, parada, latitude ?? null, longitude ?? null, orden, turnoMapeado]
+        );
         if (padre_id) {
             await pool.query(
                 `INSERT INTO alumno_padres (alumno_id, padre_id, rol)
@@ -188,6 +190,8 @@ router.put('/alumnos/:id', async (req, res) => {
         longitude,
         orden,
         activo,
+        turno_estudio,
+        turnoEstudio,
     } = req.body;
 
     try {
@@ -199,6 +203,10 @@ router.put('/alumnos/:id', async (req, res) => {
 
         const alumno = actual.rows[0];
         const rutaAnteriorId = alumno.ruta_id;
+
+        const turnoRaw = turno_estudio || turnoEstudio || alumno.turno_estudio;
+        const turnoMapeado = (turnoRaw === 'mañana') ? 'matutino' : (turnoRaw === 'tarde') ? 'vespertino' : turnoRaw;
+
         const resultado = await pool.query(
             `UPDATE alumnos
              SET nombre = $1,
@@ -209,8 +217,9 @@ router.put('/alumnos/:id', async (req, res) => {
                  latitude = $6,
                  longitude = $7,
                  orden = $8,
-                 activo = $9
-             WHERE id = $10
+                 activo = $9,
+                 turno_estudio = $10
+             WHERE id = $11
              RETURNING *`,
             [
                 nombre ?? alumno.nombre,
@@ -222,6 +231,7 @@ router.put('/alumnos/:id', async (req, res) => {
                 longitude ?? alumno.longitude,
                 orden ?? alumno.orden,
                 activo ?? alumno.activo,
+                turnoMapeado,
                 id,
             ]
         );

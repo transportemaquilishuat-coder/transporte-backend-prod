@@ -71,9 +71,12 @@ const crearTablas = async () => {
         latitude DECIMAL(10,8),
         longitude DECIMAL(11,8),
         orden INTEGER,
+        turno_estudio VARCHAR(20) NOT NULL DEFAULT 'matutino',
         activo BOOLEAN DEFAULT true,
         creado_en TIMESTAMP DEFAULT NOW()
       );
+
+      ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS turno_estudio VARCHAR(20) NOT NULL DEFAULT 'matutino';
 
       CREATE TABLE IF NOT EXISTS ausencias (
         id SERIAL PRIMARY KEY,

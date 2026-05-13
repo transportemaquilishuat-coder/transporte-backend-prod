@@ -125,7 +125,8 @@ const { obtenerCodigoValido, resolverDestinoVinculacion, validarRolParaCodigo, p
 router.post('/registro', async (req, res) => {
     const {
         nombre, email, correo, password, contrasena, contraseña, rol, telefono, dui, licencia, placa,
-        fechaInicio, fechaFin, codigo, alumnoNombre, alumnoGrado, colegioNombre
+        fechaInicio, fechaFin, codigo, alumnoNombre, alumnoGrado, colegioNombre,
+        turno_estudio, turnoEstudio
     } = req.body;
     
     const valorEmail = email || correo;
@@ -198,10 +199,13 @@ router.post('/registro', async (req, res) => {
                 rutaId = rutaRes.rows[0]?.id || null;
             }
 
+            const turnoRaw = turno_estudio || turnoEstudio || 'matutino';
+            const turnoMapeado = (turnoRaw === 'mañana') ? 'matutino' : (turnoRaw === 'tarde') ? 'vespertino' : turnoRaw;
+
             const alumnoRes = await client.query(
-                `INSERT INTO alumnos (nombre, grado, padre_id, ruta_id, colegio_id, colegio_nombre)
-                 VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-                [alumnoNombre, alumnoGrado || null, usuario.id, rutaId, colegioId, colegioNombre || null]
+                `INSERT INTO alumnos (nombre, grado, padre_id, ruta_id, colegio_id, colegio_nombre, turno_estudio)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+                [alumnoNombre, alumnoGrado || null, usuario.id, rutaId, colegioId, colegioNombre || null, turnoMapeado]
             );
             nuevoAlumno = alumnoRes.rows[0];
 

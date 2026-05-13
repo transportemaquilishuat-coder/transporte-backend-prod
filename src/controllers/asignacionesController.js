@@ -74,7 +74,7 @@ const obtenerOCrearRutaConductor = async (conductorId) => {
 
 exports.alumnosPorConductor = async (req, res) => {
     const conductorId = Number(req.params.conductorId);
-    const { turno } = req.query; // 'mañana', 'tarde' o null para ver todos
+    const { turno, turno_estudio, turnoEstudio } = req.query; 
 
     if (!Number.isInteger(conductorId)) {
         return res.status(400).json({ error: 'conductorId invalido' });
@@ -90,6 +90,9 @@ exports.alumnosPorConductor = async (req, res) => {
 
         const rutasIds = rutas.map((ruta) => ruta.id);
 
+        const turnoRaw = turno_estudio || turnoEstudio || turno;
+        const turnoMapeado = (turnoRaw === 'mañana') ? 'matutino' : (turnoRaw === 'tarde') ? 'vespertino' : (turnoRaw || null);
+
         // Ajustar la consulta para considerar el turno si se proporciona
         // El turno filtra tanto la ruta base como los cambios programados
         const alumnosResult = await pool.query(
@@ -97,6 +100,7 @@ exports.alumnosPorConductor = async (req, res) => {
                 a.id,
                 a.nombre,
                 a.grado,
+                a.turno_estudio,
                 COALESCE(pr.ruta_id, a.ruta_id) AS "rutaId",
                 COALESCE(pr.parada, a.parada) AS parada,
                 COALESCE(pr.latitude, a.latitude) AS latitude,
@@ -134,8 +138,9 @@ exports.alumnosPorConductor = async (req, res) => {
                  (pr.id IS NULL AND a.ruta_id = ANY($1::int[])) OR
                  (pr.id IS NOT NULL AND pr.ruta_id = ANY($1::int[]))
                )
+               AND ($2::text IS NULL OR a.turno_estudio = $2)
             ORDER BY a.orden, a.nombre`,
-            [rutasIds, turno || null]
+            [rutasIds, turnoMapeado]
         );
 
         res.json({
@@ -149,7 +154,7 @@ exports.alumnosPorConductor = async (req, res) => {
             totalAlumnos: alumnosResult.rows.length,
             ausentes: alumnosResult.rows.filter((alumno) => alumno.ausente).length,
             configuracionUi,
-            turnoActual: turno || 'todos'
+            turnoActual: turnoMapeado || 'todos'
         });
     } catch (error) {
         console.error('Error alumnosPorConductor:', error.message);
@@ -359,6 +364,8 @@ exports.inscribirAlumnoPorConductor = async (req, res) => {
         orden,
         latitude,
         longitude,
+        turno_estudio,
+        turnoEstudio,
     } = req.body;
 
     if (!Number.isInteger(conductorId)) {
@@ -386,10 +393,13 @@ exports.inscribirAlumnoPorConductor = async (req, res) => {
             return res.status(403).json({ error: 'El conductor no tiene permisos sobre esta ruta' });
         }
 
+        const turnoRaw = turno_estudio || turnoEstudio || 'matutino';
+        const turnoMapeado = (turnoRaw === 'mañana') ? 'matutino' : (turnoRaw === 'tarde') ? 'vespertino' : turnoRaw;
+
         const resultado = await pool.query(
-            `INSERT INTO alumnos (nombre, grado, ruta_id, padre_id, parada, latitude, longitude, orden)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             RETURNING id, nombre, grado, ruta_id AS "rutaId", padre_id AS "padreId", parada, latitude, longitude, orden, activo, creado_en`,
+            `INSERT INTO alumnos (nombre, grado, ruta_id, padre_id, parada, latitude, longitude, orden, turno_estudio)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             RETURNING id, nombre, grado, ruta_id AS "rutaId", padre_id AS "padreId", parada, latitude, longitude, orden, activo, creado_en, turno_estudio`,
             [
                 nombre,
                 grado ?? null,
@@ -399,6 +409,7 @@ exports.inscribirAlumnoPorConductor = async (req, res) => {
                 latitude ?? null,
                 longitude ?? null,
                 orden ?? null,
+                turnoMapeado,
             ]
         );
 
