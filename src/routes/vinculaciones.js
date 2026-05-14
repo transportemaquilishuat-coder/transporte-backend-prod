@@ -149,6 +149,38 @@ router.post('/registro-con-codigo', (req, res) => {
     res.status(410).json({ error: 'Endpoint deprecado. Use /api/auth/registro para todos los registros.' });
 });
 
+const tieneTexto = (valor) => valor !== null && valor !== undefined && String(valor).trim() !== '';
+
+const mapearTurnoEstudio = (turnoRaw = 'matutino') => {
+    const turno = String(turnoRaw || 'matutino').trim().toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+    if (turno === 'manana') return 'matutino';
+    if (turno === 'tarde') return 'vespertino';
+    return turno || 'matutino';
+};
+
+const obtenerDatosAlumnoPayload = (body) => {
+    const hijo = body.hijo || {};
+    const alumno = body.alumno || {};
+    const direccion = alumno.parada || alumno.direccion || hijo.parada || hijo.direccion || null;
+    const turnoRaw = alumno.turno_estudio || alumno.turnoEstudio || hijo.turno_estudio || hijo.turnoEstudio || 'matutino';
+
+    return {
+        nombre: alumno.nombre || hijo.nombre || null,
+        grado: alumno.grado || hijo.grado || null,
+        colegioNombre: alumno.colegioNombre || hijo.colegioNombre || null,
+        direccion,
+        parada: direccion,
+        turnoEstudio: mapearTurnoEstudio(turnoRaw),
+    };
+};
+
+const camposFaltantesAlumno = (alumno) => {
+    const requeridos = ['nombre', 'grado', 'colegioNombre', 'direccion'];
+    return requeridos.filter((campo) => !tieneTexto(alumno[campo]));
+};
+
 const vincularConCodigoHandler = async (req, res) => {
     const { codigo, alumno } = req.body;
     if (!codigo) return res.status(400).json({ error: 'El codigo es requerido' });
@@ -182,15 +214,54 @@ const vincularConCodigoHandler = async (req, res) => {
         // 2. Lógica de Vinculación según Rol
         let studentResponse = null;
         if (req.user.rol === 'padre') {
-            if (alumno && alumno.nombre) {
+            if (alumnoId) {
+                const alumnoExistente = await client.query(
+                    'SELECT * FROM alumnos WHERE id = $1 AND activo = true',
+                    [alumnoId]
+                );
+
+                if (alumnoExistente.rows.length === 0) {
+                    await client.query('ROLLBACK');
+                    return res.status(404).json({ error: 'Alumno no encontrado para vincular' });
+                }
+
+                await client.query(
+                    `INSERT INTO alumno_padres (alumno_id, padre_id, rol)
+                     VALUES ($1, $2, 'compartido')
+                     ON CONFLICT DO NOTHING`,
+                    [alumnoId, req.user.id]
+                );
+
+                studentResponse = alumnoExistente.rows[0];
+            } else if (req.body.alumno || req.body.hijo) {
                 // ESCENARIO 1: Crear nuevo alumno vinculado directamente
-                const turnoRaw = alumno.turno_estudio || alumno.turnoEstudio || 'matutino';
-                const turnoMapeado = (turnoRaw === 'mañana') ? 'matutino' : (turnoRaw === 'tarde') ? 'vespertino' : turnoRaw;
+                const alumnoPayload = obtenerDatosAlumnoPayload(req.body);
+                const faltantes = camposFaltantesAlumno(alumnoPayload);
+
+                if (faltantes.length > 0) {
+                    await client.query('ROLLBACK');
+                    return res.status(400).json({
+                        error: 'Informacion del estudiante requerida',
+                        infoMissing: true,
+                        campos: faltantes
+                    });
+                }
+                const turnoMapeado = alumnoPayload.turnoEstudio;
 
                 const nuevoAlumnoRes = await client.query(
-                    `INSERT INTO alumnos (nombre, grado, padre_id, ruta_id, colegio_id, turno_estudio, padre_email, activo)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, true) RETURNING *`,
-                    [alumno.nombre, alumno.grado || null, req.user.id, rutaId, colegioId, turnoMapeado, req.user.email]
+                    `INSERT INTO alumnos (nombre, grado, padre_id, ruta_id, colegio_id, colegio_nombre, parada, turno_estudio, padre_email, activo)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true) RETURNING *`,
+                    [
+                        String(alumnoPayload.nombre).trim(),
+                        String(alumnoPayload.grado).trim(),
+                        req.user.id,
+                        rutaId,
+                        colegioId,
+                        String(alumnoPayload.colegioNombre).trim(),
+                        String(alumnoPayload.parada).trim(),
+                        turnoMapeado,
+                        req.user.email
+                    ]
                 );
                 studentResponse = nuevoAlumnoRes.rows[0];
                 
@@ -238,9 +309,11 @@ const vincularConCodigoHandler = async (req, res) => {
 
         await client.query('COMMIT');
         return res.json({ 
+            ok: true,
             success: true,
             mensaje: 'Vinculación exitosa',
-            desc: studentResponse ? `Vinculado a ${studentResponse.nombre}` : (destino.desc || 'Vinculación completada'),
+            desc: studentResponse ? 'Estudiante vinculado a la ruta del conductor.' : (destino.desc || 'Vinculacion completada'),
+            alumnoId: studentResponse?.id || alumnoId || null,
             colegioId,
             rutaId,
             student: studentResponse

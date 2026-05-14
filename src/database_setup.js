@@ -79,6 +79,7 @@ const crearTablas = async () => {
 
       ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS turno_estudio VARCHAR(20) NOT NULL DEFAULT 'matutino';
       ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS padre_email VARCHAR(100);
+      ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS colegio_nombre VARCHAR(150);
 
       CREATE TABLE IF NOT EXISTS ausencias (
         id SERIAL PRIMARY KEY,
