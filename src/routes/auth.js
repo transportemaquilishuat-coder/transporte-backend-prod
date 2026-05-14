@@ -141,7 +141,14 @@ router.post('/registro', async (req, res) => {
         return res.status(400).json({ error: 'Rol inválido para registro' });
     }
 
-    await pool.ready;
+    try {
+        await pool.ensureReady();
+    } catch (error) {
+        return res.status(503).json({
+            error: 'Base de datos no disponible',
+            detalle: 'No se pudo preparar el esquema para registrar alumnos'
+        });
+    }
 
     const client = await pool.connect();
     try {
