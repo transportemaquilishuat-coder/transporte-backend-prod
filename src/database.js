@@ -37,14 +37,25 @@ const asegurarEsquema = async () => {
 
         await client.query(`
             ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS colegio_nombre VARCHAR(150);
+            ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS turno_estudio VARCHAR(20) NOT NULL DEFAULT 'matutino';
+            ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS padre_email VARCHAR(100);
+        `);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS alumno_padres (
+                id SERIAL PRIMARY KEY,
+                alumno_id INTEGER REFERENCES alumnos(id) ON DELETE CASCADE,
+                padre_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
+                rol VARCHAR(50) DEFAULT 'principal',
+                creado_en TIMESTAMP DEFAULT NOW(),
+                UNIQUE(alumno_id, padre_id)
+            )
         `);
 
         dbStatus.schemaOk = true;
     } catch (error) {
         dbStatus.error = error.message;
-        if (process.env.NODE_ENV !== 'production') {
-            console.error('⚠️ Error en inicialización DB:', error.message);
-        }
+        console.error('Error en inicializacion DB:', error.message);
     } finally {
         if (client) client.release();
     }

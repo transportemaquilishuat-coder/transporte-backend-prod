@@ -141,6 +141,8 @@ router.post('/registro', async (req, res) => {
         return res.status(400).json({ error: 'Rol inválido para registro' });
     }
 
+    await pool.ready;
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
