@@ -34,6 +34,11 @@ const asegurarEsquema = async () => {
                 actualizado_en TIMESTAMP DEFAULT NOW()
             )
         `);
+
+        await client.query(`
+            ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS colegio_nombre VARCHAR(150);
+        `);
+
         dbStatus.schemaOk = true;
     } catch (error) {
         dbStatus.error = error.message;
@@ -46,9 +51,7 @@ const asegurarEsquema = async () => {
 };
 
 // Inicialización asíncrona
-asegurarEsquema();
-
-pool.ready = Promise.resolve(true);
+pool.ready = asegurarEsquema();
 pool.getStatus = () => dbStatus;
 
 module.exports = pool;

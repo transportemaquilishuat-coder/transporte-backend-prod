@@ -185,6 +185,8 @@ const vincularConCodigoHandler = async (req, res) => {
     const { codigo, alumno } = req.body;
     if (!codigo) return res.status(400).json({ error: 'El codigo es requerido' });
 
+    await pool.ready;
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
