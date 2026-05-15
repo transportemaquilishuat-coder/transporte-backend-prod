@@ -286,6 +286,33 @@ const crearTablas = async () => {
         sentido VARCHAR(50),
         creado_en TIMESTAMP DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS solicitudes_cambio_punto_recogida (
+        id SERIAL PRIMARY KEY,
+        alumno_id INTEGER REFERENCES alumnos(id) ON DELETE CASCADE,
+        padre_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
+        conductor_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+        ruta_id INTEGER REFERENCES rutas(id) ON DELETE SET NULL,
+        parada_actual VARCHAR(150) NOT NULL,
+        latitude_actual DECIMAL(10,8) NOT NULL,
+        longitude_actual DECIMAL(11,8) NOT NULL,
+        parada_nueva VARCHAR(150) NOT NULL,
+        latitude_nueva DECIMAL(10,8) NOT NULL,
+        longitude_nueva DECIMAL(11,8) NOT NULL,
+        estado VARCHAR(20) NOT NULL DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'aprobado', 'rechazado')),
+        motivo TEXT,
+        respuesta_conductor TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        respondido_at TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_solicitudes_cambio_punto_conductor_estado
+      ON solicitudes_cambio_punto_recogida (conductor_id, estado, created_at DESC);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_solicitud_cambio_punto_pendiente_alumno
+      ON solicitudes_cambio_punto_recogida (alumno_id)
+      WHERE estado = 'pendiente';
     `);
 
     console.log('✅ Tablas creadas/actualizadas correctamente');

@@ -77,6 +77,7 @@ app.use('/api/super-admin', require('./routes/superAdmin'));
 app.use('/api/superadmin', require('./routes/superAdmin'));
 app.use('/api/notificaciones', require('./routes/notificaciones'));
 app.use('/api/padres', require('./routes/padres'));
+app.use('/api/conductor', require('./routes/conductor'));
 app.use('/api/colegios', require('./routes/colegios'));
 app.use('/api/desvios', require('./routes/desvios'));
 app.use('/api/vinculaciones', require('./routes/vinculaciones'));
