@@ -77,6 +77,7 @@ const crearTablas = async () => {
         creado_en TIMESTAMP DEFAULT NOW()
       );
 
+      ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS colegio_id INTEGER REFERENCES colegios(id);
       ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS turno_estudio VARCHAR(20) NOT NULL DEFAULT 'matutino';
       ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS padre_email VARCHAR(100);
       ALTER TABLE alumnos ADD COLUMN IF NOT EXISTS colegio_nombre VARCHAR(150);
