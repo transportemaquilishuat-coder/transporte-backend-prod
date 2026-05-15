@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const pool = require('../database');
+const validate = require('deep-email-validator').default;
 const { authenticateToken } = require('../middleware/auth');
 const { SESSION_EXPIRES_IN, firmarTokenSesion } = require('../utils/authTokens');
 
@@ -139,6 +140,28 @@ router.post('/registro', async (req, res) => {
 
     if (!ROLES_VALIDOS_USUARIO.includes(rol)) {
         return res.status(400).json({ error: 'Rol inválido para registro' });
+    }
+
+    // 0. Validación Profunda de Email (SMTP/MX/Disposable)
+    try {
+        const emailCheck = await validate({
+            email: emailNormalizado,
+            validateRegex: true,
+            validateMx: true,
+            validateTypo: true,
+            validateDisposable: true,
+            validateSMTP: true,
+        });
+
+        if (!emailCheck.valid) {
+            return res.status(400).json({ 
+                error: 'Email inválido o inexistente', 
+                detalle: `La verificación falló en: ${emailCheck.reason}. Asegúrese de que el buzón de correo exista realmente.`,
+                codigo: 'EMAIL_VALIDATION_FAILED'
+            });
+        }
+    } catch (err) {
+        console.warn('[REGISTRO] Error en validación profunda de email (procediendo de todos modos):', err.message);
     }
 
     try {

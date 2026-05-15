@@ -82,6 +82,7 @@ app.use('/api/desvios', require('./routes/desvios'));
 app.use('/api/vinculaciones', require('./routes/vinculaciones'));
 app.use('/api/avisos', require('./routes/avisos'));
 app.use('/api/programacion', require('./routes/programacion'));
+app.use('/api/catalogos', require('./routes/catalogos'));
 // ================================
 // 🚍 ESTADO GLOBAL EN MEMORIA
 // ================================

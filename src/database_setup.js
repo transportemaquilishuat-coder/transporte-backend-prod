@@ -268,6 +268,15 @@ const crearTablas = async () => {
         UNIQUE(alumno_id, fecha, tipo)
       );
 
+      CREATE TABLE IF NOT EXISTS sedes_educativas (
+        id SERIAL PRIMARY KEY,
+        codigo_infraestructura VARCHAR(20) UNIQUE,
+        nombre_oficial VARCHAR(255) NOT NULL,
+        departamento VARCHAR(100),
+        municipio VARCHAR(100),
+        creado_en TIMESTAMP DEFAULT NOW()
+      );
+
       CREATE TABLE IF NOT EXISTS historial_ubicaciones (
         id SERIAL PRIMARY KEY,
         ruta_id INTEGER REFERENCES rutas(id) ON DELETE CASCADE,
