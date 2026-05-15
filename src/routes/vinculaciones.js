@@ -210,7 +210,23 @@ const vincularConCodigoHandler = async (req, res) => {
             return res.status(400).json({ error: 'Codigo no valido para el rol de tu cuenta' });
         }
 
-        const { colegioId, conductorId, rutaId, alumnoId } = destino;
+        const { colegioId, conductorId, rutaId: rutaIdOriginal, alumnoId } = destino;
+        let rutaId = rutaIdOriginal;
+
+        // 0. Asegurar que el conductor tenga una ruta si estamos vinculando a un padre
+        if (req.user.rol === 'padre' && conductorId && !rutaId) {
+            const conductorRes = await client.query('SELECT nombre, colegio_id FROM usuarios WHERE id = $1', [conductorId]);
+            if (conductorRes.rows.length > 0) {
+                const cond = conductorRes.rows[0];
+                const nuevaRutaRes = await client.query(
+                    `INSERT INTO rutas (nombre, conductor_id, colegio_id, activa)
+                     VALUES ($1, $2, $3, true) RETURNING id`,
+                    [`Ruta de ${cond.nombre}`, conductorId, cond.colegio_id || colegioId]
+                );
+                rutaId = nuevaRutaRes.rows[0].id;
+                console.log(`[VINCULACION] Ruta creada automáticamente para conductor ${conductorId}`);
+            }
+        }
 
         // 1. Actualizar Colegio del Usuario
         if (colegioId) {
@@ -329,8 +345,16 @@ const vincularConCodigoHandler = async (req, res) => {
         });
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error('Error vinculando con descubrimiento:', error);
-        return res.status(500).json({ error: 'Error interno en la vinculación' });
+        console.error('[VINCULACION] Error crítico:', {
+            mensaje: error.message,
+            stack: error.stack,
+            detail: error.detail,
+            code: error.code
+        });
+        return res.status(500).json({ 
+            error: 'Error interno en la vinculación',
+            detalle: error.message
+        });
     } finally {
         client.release();
     }
