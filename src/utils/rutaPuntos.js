@@ -6,8 +6,8 @@ const normalizarNumero = (valor) => {
     return Number.isFinite(numero) ? numero : null;
 };
 
-const sincronizarPuntoAlumno = async (alumnoId) => {
-    const resultado = await pool.query(
+const sincronizarPuntoAlumno = async (alumnoId, client = pool) => {
+    const resultado = await client.query(
         `SELECT id, ruta_id, nombre, parada, latitude, longitude, orden
          FROM alumnos
          WHERE id = $1`,
@@ -21,7 +21,7 @@ const sincronizarPuntoAlumno = async (alumnoId) => {
     const latitud = normalizarNumero(alumno.latitude);
     const longitud = normalizarNumero(alumno.longitude);
 
-    await pool.query(
+    await client.query(
         `DELETE FROM puntos_ruta
          WHERE alumno_id = $1
            AND tipo = 'recogida'
@@ -30,7 +30,7 @@ const sincronizarPuntoAlumno = async (alumnoId) => {
     );
 
     if (!rutaId || latitud === null || longitud === null) {
-        await pool.query(
+        await client.query(
             `DELETE FROM puntos_ruta
              WHERE alumno_id = $1
                AND tipo = 'recogida'`,
@@ -42,10 +42,10 @@ const sincronizarPuntoAlumno = async (alumnoId) => {
     const nombreParada = alumno.parada || `Punto de ${alumno.nombre}`;
     const orden = Number.isInteger(Number(alumno.orden)) ? Number(alumno.orden) : 1000;
 
-    const punto = await pool.query(
+    const punto = await client.query(
         `INSERT INTO puntos_ruta (ruta_id, alumno_id, tipo, latitud, longitud, orden, nombre_parada)
          VALUES ($1, $2, 'recogida', $3, $4, $5, $6)
-         ON CONFLICT (alumno_id, tipo)
+         ON CONFLICT (alumno_id, tipo) WHERE alumno_id IS NOT NULL
          DO UPDATE SET
              ruta_id = EXCLUDED.ruta_id,
              latitud = EXCLUDED.latitud,
@@ -59,10 +59,10 @@ const sincronizarPuntoAlumno = async (alumnoId) => {
     return punto.rows[0] || null;
 };
 
-const sincronizarPuntosRuta = async (rutaId) => {
+const sincronizarPuntosRuta = async (rutaId, client = pool) => {
     if (!rutaId) return [];
 
-    const alumnos = await pool.query(
+    const alumnos = await client.query(
         `SELECT id
          FROM alumnos
          WHERE ruta_id = $1
@@ -72,11 +72,11 @@ const sincronizarPuntosRuta = async (rutaId) => {
 
     const puntos = [];
     for (const alumno of alumnos.rows) {
-        const punto = await sincronizarPuntoAlumno(alumno.id);
+        const punto = await sincronizarPuntoAlumno(alumno.id, client);
         if (punto) puntos.push(punto);
     }
 
-    await pool.query(
+    await client.query(
         `DELETE FROM puntos_ruta pr
          WHERE pr.ruta_id = $1
            AND pr.tipo = 'recogida'

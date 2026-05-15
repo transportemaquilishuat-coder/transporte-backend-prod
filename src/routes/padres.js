@@ -431,9 +431,6 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
             idsAActualizar = otrosHijos.rows.map(h => h.alumno_id);
         }
 
-        const paradaSolicitada = tieneTexto(parada) ? String(parada) : null;
-        const paradaGenerada = `Punto ${latSolicitada.toFixed(5)}, ${lngSolicitada.toFixed(5)}`;
-
         const alumnosAActualizar = aplicarATodos
             ? await client.query(
                 `SELECT a.id, a.nombre, a.ruta_id, a.parada, a.latitude, a.longitude,
@@ -445,15 +442,35 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
             )
             : actual;
 
-        const cambiosBloqueados = alumnosAActualizar.rows.filter((alumno) => {
-            const cambiaParada = paradaSolicitada !== null && tieneTexto(alumno.parada) && paradaSolicitada !== alumno.parada;
-            const cambiaLatitud = alumno.latitude !== null && !coordenadaIgual(alumno.latitude, latSolicitada);
-            const cambiaLongitud = alumno.longitude !== null && !coordenadaIgual(alumno.longitude, lngSolicitada);
-            return cambiaParada || cambiaLatitud || cambiaLongitud;
-        });
+        const paradaSolicitada = tieneTexto(parada) ? String(parada) : null;
+        const paradaGenerada = `Punto ${latSolicitada.toFixed(5)}, ${lngSolicitada.toFixed(5)}`;
+        const paradaNueva = paradaSolicitada || paradaGenerada;
 
-        if (cambiosBloqueados.length > 0) {
-            const alumnosSinConductor = cambiosBloqueados.filter((alumno) => !alumno.conductor_id || !alumno.ruta_id);
+        const aActualizarDirecto = [];
+        const aCrearSolicitud = [];
+
+        for (const alumno of alumnosAActualizar.rows) {
+            const tieneGPS = alumno.latitude !== null && alumno.longitude !== null;
+            
+            if (!tieneGPS) {
+                // PRIMERA VEZ: Se guarda directo
+                aActualizarDirecto.push(alumno.id);
+            } else {
+                // SEGUNDA VEZ O MÁS: Verificar si realmente cambió algo
+                const cambiaParada = paradaSolicitada !== null && tieneTexto(alumno.parada) && paradaSolicitada !== alumno.parada;
+                const cambiaLatitud = !coordenadaIgual(alumno.latitude, latSolicitada);
+                const cambiaLongitud = !coordenadaIgual(alumno.longitude, lngSolicitada);
+                
+                if (cambiaParada || cambiaLatitud || cambiaLongitud) {
+                    aCrearSolicitud.push(alumno);
+                }
+            }
+        }
+
+        // 3. Procesar Cambios Bloqueados (Solicitudes)
+        const solicitudesCreadas = [];
+        if (aCrearSolicitud.length > 0) {
+            const alumnosSinConductor = aCrearSolicitud.filter((alumno) => !alumno.conductor_id || !alumno.ruta_id);
             if (alumnosSinConductor.length > 0) {
                 await client.query('ROLLBACK');
                 return res.status(409).json({
@@ -466,9 +483,7 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
                 });
             }
 
-            const solicitudes = [];
-            const paradaNueva = paradaSolicitada || paradaGenerada;
-            for (const alumno of cambiosBloqueados) {
+            for (const alumno of aCrearSolicitud) {
                 const solicitud = await crearSolicitudCambioPunto(client, {
                     alumno,
                     padreId,
@@ -477,13 +492,42 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
                     longitudeNueva: lngSolicitada,
                     motivo: 'Cambio solicitado por el padre desde el mapa',
                 });
-                solicitudes.push(solicitud);
+                solicitudesCreadas.push(solicitud);
             }
+        }
 
-            await client.query('COMMIT');
+        // 4. Procesar Actualizaciones Directas
+        if (aActualizarDirecto.length > 0) {
+            await client.query(
+                `UPDATE alumnos 
+                 SET parada = CASE
+                        WHEN $1 IS NOT NULL THEN $1
+                        WHEN parada IS NULL OR BTRIM(parada) = '' THEN $2
+                        ELSE parada
+                     END,
+                     latitude = COALESCE(latitude, $3),
+                     longitude = COALESCE(longitude, $4)
+                 WHERE id = ANY($5::int[])`,
+                [paradaSolicitada, paradaGenerada, latSolicitada, lngSolicitada, aActualizarDirecto]
+            );
 
-            for (const solicitud of solicitudes) {
-                const alumno = cambiosBloqueados.find((item) => item.id === solicitud.alumno_id);
+            // Sincronizar puntos y rutas para los directos
+            for (const id of aActualizarDirecto) {
+                await sincronizarPuntoAlumno(id, client);
+                
+                const rId = await client.query('SELECT ruta_id FROM alumnos WHERE id = $1', [id]);
+                if (rId.rows[0]?.ruta_id) {
+                    autoNombrarRuta(rId.rows[0].ruta_id).catch(e => console.error('Error auto-nombrando:', e));
+                }
+            }
+        }
+
+        await client.query('COMMIT');
+
+        // 5. Notificar y responder
+        if (solicitudesCreadas.length > 0) {
+            for (const solicitud of solicitudesCreadas) {
+                const alumno = aCrearSolicitud.find((item) => item.id === solicitud.alumno_id);
                 enviarNotificacionPush(
                     solicitud.conductor_id,
                     'Solicitud de cambio de punto',
@@ -501,47 +545,22 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
             }
 
             return res.status(202).json({
-                mensaje: aplicarATodos
-                    ? 'Solicitudes de cambio de punto enviadas al conductor'
+                mensaje: aActualizarDirecto.length > 0 
+                    ? 'Puntos iniciales guardados y solicitudes de cambio enviadas' 
                     : 'Solicitud de cambio de punto enviada al conductor',
                 codigo: 'CAMBIO_PUNTO_RECOGIDA_PENDIENTE_APROBACION',
-                solicitudes
+                solicitudes: solicitudesCreadas,
+                idsActualizados: aActualizarDirecto
             });
         }
-
-        // 3. Actualizar alumnos
-        await client.query(
-            `UPDATE alumnos 
-             SET parada = CASE
-                    WHEN $1 IS NOT NULL THEN $1
-                    WHEN parada IS NULL OR BTRIM(parada) = '' THEN $2
-                    ELSE parada
-                 END,
-                 latitude = COALESCE(latitude, $3),
-                 longitude = COALESCE(longitude, $4)
-             WHERE id = ANY($5::int[])`,
-            [paradaSolicitada, paradaGenerada, latSolicitada, lngSolicitada, idsAActualizar]
-        );
-
-        // 4. Sincronizar puntos y rutas
-        for (const id of idsAActualizar) {
-            await sincronizarPuntoAlumno(id);
-            
-            // Obtener ruta_id para auto-nombrar
-            const rId = await client.query('SELECT ruta_id FROM alumnos WHERE id = $1', [id]);
-            if (rId.rows[0]?.ruta_id) {
-                autoNombrarRuta(rId.rows[0].ruta_id).catch(e => console.error('Error auto-nombrando:', e));
-            }
-        }
-
-        await client.query('COMMIT');
 
         res.json({
             mensaje: aplicarATodos 
                 ? 'Punto de recogida actualizado para todos los hijos' 
                 : 'Punto de recogida definido correctamente',
-            idsActualizados: idsAActualizar
+            idsActualizados: aActualizarDirecto
         });
+
     } catch (error) {
         await client.query('ROLLBACK');
         if (error.codigo === 'SOLICITUD_CAMBIO_PUNTO_PENDIENTE' || error.code === '23505') {
