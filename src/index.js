@@ -7,6 +7,8 @@ const { Server } = require('socket.io');
 dotenv.config();
 
 const pool = require('./database');
+const { calcularDistancia } = require('./utils/geoUtils');
+const { enviarNotificacionPush } = require('./utils/notificaciones');
 
 const app = express();
 const server = http.createServer(app);
@@ -96,6 +98,8 @@ let ubicacionBus = {
 let conductoresActivos = {};
 // Control de guardado en DB para no saturar (ej: cada 20 segundos)
 let ultimoGuardadoDB = {};
+// Control de notificaciones de llegada enviadas (para no repetir)
+let llegadasNotificadas = {}; // { [rutaId_fecha]: true }
 
 // ================================
 // 📍 ENDPOINT REST (fallback)
@@ -116,13 +120,15 @@ io.on('connection', (socket) => {
 
         const ahora = Date.now();
         const conductorId = datos.conductorId;
+        const rutaId = datos.rutaId;
+        const hoy = new Date().toISOString().split('T')[0];
 
         // Guardar última ubicación global (solo para debug/admin si es necesario)
         ubicacionBus = {
             latitude: datos.latitude,
             longitude: datos.longitude,
             conductorId: conductorId || null,
-            rutaId: datos.rutaId || null,
+            rutaId: rutaId || null,
             sentido: datos.sentido || null,
             activo: true,
         };
@@ -135,7 +141,7 @@ io.on('connection', (socket) => {
                 longitude: datos.longitude,
                 nombre: datos.nombre || 'Conductor',
                 ruta: datos.ruta || 'Sin ruta',
-                rutaId: datos.rutaId || null,
+                rutaId: rutaId || null,
                 sentido: datos.sentido || null,
                 activo: true,
                 ultimaActualizacion: new Date().toISOString(),
@@ -146,14 +152,71 @@ io.on('connection', (socket) => {
                 ultimoGuardadoDB[conductorId] = ahora;
                 pool.query(
                     'INSERT INTO historial_ubicaciones (ruta_id, conductor_id, latitud, longitud, sentido) VALUES ($1, $2, $3, $4, $5)',
-                    [datos.rutaId || null, conductorId, datos.latitude, datos.longitude, datos.sentido || null]
+                    [rutaId || null, conductorId, datos.latitude, datos.longitude, datos.sentido || null]
                 ).catch(e => console.error('Error guardando historial:', e.message));
             }
         }
 
         // 📡 Emitir SEGMENTADO (Solo a los padres de esta ruta)
-        if (datos.rutaId) {
-            io.to(`ruta:${datos.rutaId}`).emit('bus:ubicacion', ubicacionBus);
+        if (rutaId) {
+            io.to(`ruta:${rutaId}`).emit('bus:ubicacion', ubicacionBus);
+            
+            // 📍 DETECCIÓN DE LLEGADA AL COLEGIO (GEOFENCING)
+            // Solo si el sentido es 'casa_a_colegio' y no hemos notificado hoy para esta ruta
+            const keyLlegada = `${rutaId}_${hoy}`;
+            if (datos.sentido === 'casa_a_colegio' && !llegadasNotificadas[keyLlegada]) {
+                try {
+                    const resColegio = await pool.query(
+                        `SELECT c.id, c.nombre, c.latitude, c.longitude 
+                         FROM rutas r 
+                         JOIN colegios c ON c.id = r.colegio_id 
+                         WHERE r.id = $1`, 
+                        [rutaId]
+                    );
+
+                    if (resColegio.rows.length > 0) {
+                        const colegio = resColegio.rows[0];
+                        if (colegio.latitude && colegio.longitude) {
+                            const distancia = calcularDistancia(
+                                datos.latitude, datos.longitude, 
+                                colegio.latitude, colegio.longitude
+                            );
+
+                            // Si está a menos de 150 metros, disparar alerta
+                            if (distancia < 150) {
+                                llegadasNotificadas[keyLlegada] = true;
+                                console.log(`[GEOFENCE] Ruta ${rutaId} llegó al colegio ${colegio.nombre}`);
+                                
+                                // Notificar por Socket
+                                io.to(`ruta:${rutaId}`).emit('bus:llegada_colegio', {
+                                    colegioNombre: colegio.nombre,
+                                    timestamp: new Date().toISOString()
+                                });
+
+                                // Notificar por Push a todos los padres de la ruta
+                                const padres = await pool.query(
+                                    `SELECT DISTINCT u.id 
+                                     FROM usuarios u 
+                                     JOIN alumnos a ON a.padre_id = u.id 
+                                     WHERE a.ruta_id = $1 AND a.activo = true`,
+                                    [rutaId]
+                                );
+
+                                padres.rows.forEach(p => {
+                                    enviarNotificacionPush(
+                                        p.id, 
+                                        'Llegada al Colegio', 
+                                        `El transporte escolar ha llegado a ${colegio.nombre}.`,
+                                        { tipo: 'llegada_colegio', rutaId }
+                                    ).catch(e => console.error('Error enviando push llegada:', e.message));
+                                });
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error en geofencing de llegada:', e.message);
+                }
+            }
         }
 
         // Verificar desvío y notificar (también segmentado)
@@ -251,6 +314,36 @@ io.on('connection', (socket) => {
 
         if (datos.rutaId) {
             io.to(`ruta:${datos.rutaId}`).emit('bus:fin_ruta', datos);
+            
+            // 🛡️ RESPALDO DE SEGURIDAD: Si termina la ruta hacia el colegio y no se envió el aviso de llegada
+            const hoy = new Date().toISOString().split('T')[0];
+            const keyLlegada = `${datos.rutaId}_${hoy}`;
+            if (datos.sentido === 'casa_a_colegio' && !llegadasNotificadas[keyLlegada]) {
+                llegadasNotificadas[keyLlegada] = true;
+                pool.query(
+                    `SELECT c.nombre FROM rutas r JOIN colegios c ON c.id = r.colegio_id WHERE r.id = $1`,
+                    [datos.rutaId]
+                ).then(resColegio => {
+                    if (resColegio.rows.length > 0) {
+                        const colegioNombre = resColegio.rows[0].nombre;
+                        // Notificar por Push (Respaldo)
+                        pool.query(
+                            `SELECT DISTINCT u.id FROM usuarios u JOIN alumnos a ON a.padre_id = u.id WHERE a.ruta_id = $1 AND a.activo = true`,
+                            [datos.rutaId]
+                        ).then(padres => {
+                            padres.rows.forEach(p => {
+                                enviarNotificacionPush(
+                                    p.id, 
+                                    'Llegada al Colegio (Confirmada)', 
+                                    `El transporte ha finalizado su ruta en ${colegioNombre}.`,
+                                    { tipo: 'llegada_colegio', rutaId: datos.rutaId }
+                                ).catch(() => {});
+                            });
+                        });
+                    }
+                }).catch(() => {});
+            }
+
             pool.query(
                 `INSERT INTO eventos_ruta (ruta_id, conductor_id, tipo, descripcion)
                  VALUES ($1, $2, 'fin_ruta', $3)`,
