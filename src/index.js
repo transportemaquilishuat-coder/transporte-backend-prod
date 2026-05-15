@@ -315,33 +315,49 @@ io.on('connection', (socket) => {
         if (datos.rutaId) {
             io.to(`ruta:${datos.rutaId}`).emit('bus:fin_ruta', datos);
             
-            // 🛡️ RESPALDO DE SEGURIDAD: Si termina la ruta hacia el colegio y no se envió el aviso de llegada
+            // 🛡️ RESPALDO DE SEGURIDAD Y CAPTURA AUTOMÁTICA DE GEOPOSICIÓN
             const hoy = new Date().toISOString().split('T')[0];
             const keyLlegada = `${datos.rutaId}_${hoy}`;
-            if (datos.sentido === 'casa_a_colegio' && !llegadasNotificadas[keyLlegada]) {
-                llegadasNotificadas[keyLlegada] = true;
+            
+            if (datos.sentido === 'casa_a_colegio') {
                 pool.query(
-                    `SELECT c.nombre FROM rutas r JOIN colegios c ON c.id = r.colegio_id WHERE r.id = $1`,
+                    `SELECT c.id, c.nombre, c.latitude, c.longitude 
+                     FROM rutas r JOIN colegios c ON c.id = r.colegio_id 
+                     WHERE r.id = $1`,
                     [datos.rutaId]
                 ).then(resColegio => {
                     if (resColegio.rows.length > 0) {
-                        const colegioNombre = resColegio.rows[0].nombre;
-                        // Notificar por Push (Respaldo)
-                        pool.query(
-                            `SELECT DISTINCT u.id FROM usuarios u JOIN alumnos a ON a.padre_id = u.id WHERE a.ruta_id = $1 AND a.activo = true`,
-                            [datos.rutaId]
-                        ).then(padres => {
-                            padres.rows.forEach(p => {
-                                enviarNotificacionPush(
-                                    p.id, 
-                                    'Llegada al Colegio (Confirmada)', 
-                                    `El transporte ha finalizado su ruta en ${colegioNombre}.`,
-                                    { tipo: 'llegada_colegio', rutaId: datos.rutaId }
-                                ).catch(() => {});
+                        const colegio = resColegio.rows[0];
+                        
+                        // A. CAPTURA AUTOMÁTICA: Si el colegio no tiene coordenadas, las tomamos del bus ahora
+                        if (!colegio.latitude || !colegio.longitude) {
+                            pool.query(
+                                'UPDATE colegios SET latitude = $1, longitude = $2 WHERE id = $3',
+                                [datos.latitude || ubicacionBus.latitude, datos.longitude || ubicacionBus.longitude, colegio.id]
+                            ).then(() => {
+                                console.log(`[AUTO-GEO] Coordenadas capturadas para el colegio: ${colegio.nombre}`);
+                            }).catch(err => console.error('Error en auto-captura geo:', err));
+                        }
+
+                        // B. NOTIFICACIÓN DE RESPALDO: Si no se envió el aviso de llegada por geocerca
+                        if (!llegadasNotificadas[keyLlegada]) {
+                            llegadasNotificadas[keyLlegada] = true;
+                            pool.query(
+                                `SELECT DISTINCT u.id FROM usuarios u JOIN alumnos a ON a.padre_id = u.id WHERE a.ruta_id = $1 AND a.activo = true`,
+                                [datos.rutaId]
+                            ).then(padres => {
+                                padres.rows.forEach(p => {
+                                    enviarNotificacionPush(
+                                        p.id, 
+                                        'Llegada al Colegio (Confirmada)', 
+                                        `El transporte ha finalizado su ruta en ${colegio.nombre}.`,
+                                        { tipo: 'llegada_colegio', rutaId: datos.rutaId }
+                                    ).catch(() => {});
+                                });
                             });
-                        });
+                        }
                     }
-                }).catch(() => {});
+                }).catch(err => console.error('Error procesando fin de ruta:', err));
             }
 
             pool.query(
