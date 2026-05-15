@@ -51,11 +51,15 @@ app.get('/', (req, res) => {
     });
 });
 
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+    // Intentar verificar la conexión actual antes de responder
+    await pool.verificarEstado();
+    const status = pool.getStatus();
+
     res.json({
-        ok: true,
+        ok: status.connected,
         service: 'transporte-backend',
-        port: PORT,
+        database: status
     });
 });
 
@@ -306,4 +310,3 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Servidor corriendo en puerto ${PORT}`);
     console.log(`🌐 BASE_URL configurada: ${BASE_URL}`);
 });
-

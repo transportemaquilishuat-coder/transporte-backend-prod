@@ -206,6 +206,21 @@ router.post('/registro', async (req, res) => {
             if (conductorId) {
                 const rutaRes = await client.query('SELECT id FROM rutas WHERE conductor_id = $1 AND activa = true LIMIT 1', [conductorId]);
                 rutaId = rutaRes.rows[0]?.id || null;
+
+                // Si el conductor no tiene ruta, crearla automáticamente para que el alumno quede vinculado
+                if (!rutaId) {
+                    const conductorRes = await client.query('SELECT nombre, colegio_id FROM usuarios WHERE id = $1', [conductorId]);
+                    if (conductorRes.rows.length > 0) {
+                        const cond = conductorRes.rows[0];
+                        const nuevaRutaRes = await client.query(
+                            `INSERT INTO rutas (nombre, conductor_id, colegio_id, activa)
+                             VALUES ($1, $2, $3, true) RETURNING id`,
+                            [`Ruta de ${cond.nombre}`, conductorId, cond.colegio_id || colegioId]
+                        );
+                        rutaId = nuevaRutaRes.rows[0].id;
+                        console.log(`[REGISTRO] Ruta creada automáticamente para conductor ${conductorId}`);
+                    }
+                }
             }
 
             const turnoRaw = turno_estudio || turnoEstudio || 'matutino';
@@ -272,8 +287,16 @@ router.post('/registro', async (req, res) => {
 
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error('Error en registro unificado:', error);
-        res.status(500).json({ error: 'Error interno del servidor' });
+        console.error('[REGISTRO] Error crítico en la transacción:', {
+            mensaje: error.message,
+            stack: error.stack,
+            detail: error.detail, // PG specific
+            code: error.code     // PG specific
+        });
+        res.status(500).json({ 
+            error: 'Error interno del servidor',
+            detalle: error.message 
+        });
     } finally {
         client.release();
     }
