@@ -42,16 +42,15 @@ const sincronizarPuntoAlumno = async (alumnoId, client = pool) => {
     const nombreParada = alumno.parada || `Punto de ${alumno.nombre}`;
     const orden = Number.isInteger(Number(alumno.orden)) ? Number(alumno.orden) : 1000;
 
+    // Usar DELETE seguido de INSERT para evitar problemas con ON CONFLICT y índices parciales
+    await client.query(
+        `DELETE FROM puntos_ruta WHERE alumno_id = $1 AND tipo = 'recogida'`,
+        [alumno.id]
+    );
+
     const punto = await client.query(
         `INSERT INTO puntos_ruta (ruta_id, alumno_id, tipo, latitud, longitud, orden, nombre_parada)
          VALUES ($1, $2, 'recogida', $3, $4, $5, $6)
-         ON CONFLICT (alumno_id, tipo) WHERE alumno_id IS NOT NULL
-         DO UPDATE SET
-             ruta_id = EXCLUDED.ruta_id,
-             latitud = EXCLUDED.latitud,
-             longitud = EXCLUDED.longitud,
-             orden = EXCLUDED.orden,
-             nombre_parada = EXCLUDED.nombre_parada
          RETURNING *`,
         [rutaId, alumno.id, latitud, longitud, orden, nombreParada]
     );

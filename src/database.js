@@ -73,12 +73,31 @@ const prepararEsquemaUnaVez = async () => {
         `);
 
         await client.query(`
+            CREATE TABLE IF NOT EXISTS puntos_ruta (
+                id SERIAL PRIMARY KEY,
+                ruta_id INTEGER REFERENCES rutas(id),
+                alumno_id INTEGER REFERENCES alumnos(id),
+                tipo VARCHAR(20) DEFAULT 'recogida',
+                latitud DECIMAL(10,8) NOT NULL,
+                longitud DECIMAL(11,8) NOT NULL,
+                orden INTEGER NOT NULL,
+                nombre_parada VARCHAR(100),
+                creado_en TIMESTAMP DEFAULT NOW()
+            );
+
+            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS alumno_id INTEGER REFERENCES alumnos(id);
+            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'recogida';
+
             CREATE INDEX IF NOT EXISTS idx_solicitudes_cambio_punto_conductor_estado
             ON solicitudes_cambio_punto_recogida (conductor_id, estado, created_at DESC);
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_solicitud_cambio_punto_pendiente_alumno
             ON solicitudes_cambio_punto_recogida (alumno_id)
             WHERE estado = 'pendiente';
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_puntos_ruta_alumno_tipo
+            ON puntos_ruta (alumno_id, tipo)
+            WHERE alumno_id IS NOT NULL;
         `);
     } finally {
         client.release();
