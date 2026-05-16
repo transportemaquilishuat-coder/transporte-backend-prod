@@ -58,9 +58,9 @@ const prepararEsquemaUnaVez = async () => {
                 conductor_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
                 ruta_id INTEGER REFERENCES rutas(id) ON DELETE SET NULL,
                 tipo VARCHAR(20) NOT NULL DEFAULT 'recogida',
-                parada_actual VARCHAR(150) NOT NULL,
-                latitude_actual DECIMAL(10,8) NOT NULL,
-                longitude_actual DECIMAL(11,8) NOT NULL,
+                parada_actual VARCHAR(150),
+                latitude_actual DECIMAL(10,8),
+                longitude_actual DECIMAL(11,8),
                 parada_nueva VARCHAR(150) NOT NULL,
                 latitude_nueva DECIMAL(10,8) NOT NULL,
                 longitude_nueva DECIMAL(11,8) NOT NULL,
@@ -74,25 +74,30 @@ const prepararEsquemaUnaVez = async () => {
         `);
 
         await client.query(`
+            ALTER TABLE solicitudes_cambio_punto_recogida ALTER COLUMN parada_actual DROP NOT NULL;
+            ALTER TABLE solicitudes_cambio_punto_recogida ALTER COLUMN latitude_actual DROP NOT NULL;
+            ALTER TABLE solicitudes_cambio_punto_recogida ALTER COLUMN longitude_actual DROP NOT NULL;
+        `);
+
+        await client.query(`
             CREATE TABLE IF NOT EXISTS puntos_ruta (
                 id SERIAL PRIMARY KEY,
                 ruta_id INTEGER REFERENCES rutas(id),
                 alumno_id INTEGER REFERENCES alumnos(id),
                 tipo VARCHAR(20) DEFAULT 'recogida',
-                latitud DECIMAL(10,8) NOT NULL,
-                longitud DECIMAL(11,8) NOT NULL,
-                orden INTEGER NOT NULL,
+                latitud DECIMAL(10,8),
+                longitud DECIMAL(11,8),
+                orden INTEGER,
                 nombre_parada VARCHAR(100),
                 creado_en TIMESTAMP DEFAULT NOW()
             );
 
             ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS alumno_id INTEGER REFERENCES alumnos(id);
             ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'recogida';
-            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS latitud DECIMAL(10,8);
-            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS longitud DECIMAL(11,8);
-            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS orden INTEGER NOT NULL DEFAULT 1000;
-            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS nombre_parada VARCHAR(100);
-            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT NOW();
+            
+            ALTER TABLE puntos_ruta ALTER COLUMN latitud DROP NOT NULL;
+            ALTER TABLE puntos_ruta ALTER COLUMN longitud DROP NOT NULL;
+            ALTER TABLE puntos_ruta ALTER COLUMN orden DROP NOT NULL;
 
             ALTER TABLE solicitudes_cambio_punto_recogida
             ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) NOT NULL DEFAULT 'recogida';

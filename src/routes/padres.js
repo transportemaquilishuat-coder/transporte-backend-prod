@@ -622,13 +622,15 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
             }
 
             for (const alumno of aCrearSolicitud) {
+                console.log(`[GEOPOSICIONAMIENTO] Creando solicitud para alumno ${alumno.id} tipo ${tipoPunto}`);
                 const solicitud = await crearSolicitudCambioPunto(client, {
                     alumno,
                     padreId,
                     paradaNueva,
                     latitudeNueva: latSolicitada,
                     longitudeNueva: lngSolicitada,
-                    motivo: 'Cambio solicitado por el padre desde el mapa',
+                    motivo: `Cambio de punto de ${tipoPunto} solicitado por el padre desde el mapa`,
+                    tipo: tipoPunto,
                 });
                 solicitudesCreadas.push(solicitud);
             }
@@ -717,7 +719,7 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
             });
         }
         res.status(500).json({ 
-            error: 'Error interno del servidor al guardar el punto',
+            error: `Error servidor: ${error.message}`,
             detalle: error.message,
             paso: 'guardado_punto_recogida'
         });
