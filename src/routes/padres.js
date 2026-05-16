@@ -382,7 +382,12 @@ router.post('/hijos/:alumnoId/solicitud-cambio-punto-recogida', authenticateToke
 router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('padre'), async (req, res) => {
     const padreId = req.user.id;
     const alumnoId = Number(req.params.alumnoId);
-    const { parada, latitude, longitude, aplicarATodos = false } = req.body;
+    const { parada, latitude, longitude, aplicarATodos = false, tipo = 'recogida' } = req.body;
+
+    console.log(`[GEOPOSICIONAMIENTO] Recibida petición para alumno ${alumnoId}:`, {
+        body: req.body,
+        padreId
+    });
 
     if (!Number.isInteger(alumnoId)) {
         return res.status(400).json({ error: 'alumnoId invalido' });
