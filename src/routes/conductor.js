@@ -3,7 +3,7 @@ const router = express.Router();
 const pool = require('../database');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { enviarNotificacionAlumno } = require('../utils/notificaciones');
-const { sincronizarPuntoAlumno } = require('../utils/rutaPuntos');
+const { guardarPuntoRutaAlumno, sincronizarPuntoAlumno } = require('../utils/rutaPuntos');
 const { autoNombrarRuta } = require('../utils/geoNaming');
 
 const mapSolicitud = (row) => ({
@@ -26,6 +26,7 @@ const mapSolicitud = (row) => ({
         longitude: row.longitude_nueva,
     },
     estado: row.estado,
+    tipo: row.tipo || 'recogida',
     motivo: row.motivo,
     respuestaConductor: row.respuesta_conductor,
     createdAt: row.created_at,
@@ -100,19 +101,35 @@ router.post('/solicitudes-cambio-punto-recogida/:solicitudId/aprobar', authentic
         }
 
         const solicitud = solicitudRes.rows[0];
-        await client.query(
-            `UPDATE alumnos
-             SET parada = $1,
-                 latitude = $2,
-                 longitude = $3
-             WHERE id = $4`,
-            [
-                solicitud.parada_nueva,
-                solicitud.latitude_nueva,
-                solicitud.longitude_nueva,
-                solicitud.alumno_id,
-            ]
-        );
+        const tipoPunto = solicitud.tipo || 'recogida';
+
+        if (tipoPunto === 'entrega') {
+            await guardarPuntoRutaAlumno({
+                alumnoId: solicitud.alumno_id,
+                rutaId: solicitud.ruta_id,
+                tipo: 'entrega',
+                latitud: solicitud.latitude_nueva,
+                longitud: solicitud.longitude_nueva,
+                orden: 2000 + Number(solicitud.alumno_id),
+                nombreParada: solicitud.parada_nueva,
+            }, client);
+        } else {
+            await client.query(
+                `UPDATE alumnos
+                 SET parada = $1,
+                     latitude = $2,
+                     longitude = $3
+                 WHERE id = $4`,
+                [
+                    solicitud.parada_nueva,
+                    solicitud.latitude_nueva,
+                    solicitud.longitude_nueva,
+                    solicitud.alumno_id,
+                ]
+            );
+
+            await sincronizarPuntoAlumno(solicitud.alumno_id, client);
+        }
 
         const aprobada = await client.query(
             `UPDATE solicitudes_cambio_punto_recogida
@@ -127,9 +144,8 @@ router.post('/solicitudes-cambio-punto-recogida/:solicitudId/aprobar', authentic
 
         await client.query('COMMIT');
 
-        sincronizarPuntoAlumno(solicitud.alumno_id)
-            .then(() => autoNombrarRuta(solicitud.ruta_id))
-            .catch(err => console.error('Error sincronizando punto aprobado:', err.message));
+        autoNombrarRuta(solicitud.ruta_id)
+            .catch(err => console.error('Error auto-nombrando punto aprobado:', err.message));
 
         enviarNotificacionAlumno(
             solicitud.alumno_id,

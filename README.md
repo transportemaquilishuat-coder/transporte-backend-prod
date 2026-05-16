@@ -116,10 +116,10 @@ Los codigos no son requisito para crear cuenta. Los codigos sirven para vincular
 
 ### Padres
 
-- `GET /api/padres/mis-hijos`: Ahora soporta multi-padre y detecta cambios programados para el día actual.
+- `GET /api/padres/mis-hijos`: Ahora soporta multi-padre, detecta cambios programados para el día actual y devuelve `entregaParada`, `entregaLatitude`, `entregaLongitude` cuando existe punto de entrega.
 - `PUT /api/padres/hijos/:alumnoId`: Edita datos básicos. La dirección solo se guarda si aún no existe; modificarla devuelve `409` hasta que exista el flujo de aprobación.
 - `POST /api/padres/hijos/:alumnoId/generar-invitacion`: Genera un código para invitar a otro padre.
-- `PUT /api/padres/hijos/:alumnoId/punto-recogida`: Define dirección y geoposición sin aprobación la primera vez. Modificar un punto ya definido crea una solicitud pendiente para el conductor y no cambia el punto actual.
+- `PUT /api/padres/hijos/:alumnoId/punto-recogida`: Define dirección y geoposición sin aprobación la primera vez. Acepta `tipo: "recogida" | "entrega"`; modificar un punto ya definido crea una solicitud pendiente para el conductor y no cambia el punto actual.
 - `POST /api/padres/hijos/:alumnoId/solicitud-cambio-punto-recogida`: Crea una solicitud pendiente para cambiar un punto exacto ya guardado.
 - `POST /api/padres/hijos/:alumnoId/solicitudes-cambio-ruta`: Reservado para el flujo de aprobación del conductor; actualmente devuelve `501`.
 - `GET /api/padres/:padreId/historial`: Historial de viajes.

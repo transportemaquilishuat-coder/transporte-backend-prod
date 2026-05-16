@@ -3,7 +3,7 @@ const router = express.Router();
 const pool = require('../database');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { autoNombrarRuta } = require('../utils/geoNaming');
-const { sincronizarPuntoAlumno } = require('../utils/rutaPuntos');
+const { guardarPuntoRutaAlumno, sincronizarPuntoAlumno } = require('../utils/rutaPuntos');
 const { generarCodigoAleatorio } = require('../utils/codigos');
 const { enviarNotificacionPush } = require('../utils/notificaciones');
 
@@ -22,6 +22,10 @@ const coordenadaIgual = (actual, nueva) => {
     if (actual === null || actual === undefined || nueva === null || nueva === undefined) return false;
     return Math.abs(Number(actual) - Number(nueva)) < 0.000001;
 };
+const normalizarTipoPunto = (valor) => {
+    const tipo = tieneTexto(valor) ? String(valor).trim().toLowerCase() : 'recogida';
+    return ['recogida', 'entrega'].includes(tipo) ? tipo : null;
+};
 
 const alumnoTienePuntoExacto = (alumno) => (
     tieneTexto(alumno.parada)
@@ -38,14 +42,16 @@ const crearSolicitudCambioPunto = async (client, {
     latitudeNueva,
     longitudeNueva,
     motivo,
+    tipo = 'recogida',
 }) => {
     const pendiente = await client.query(
         `SELECT id
          FROM solicitudes_cambio_punto_recogida
          WHERE alumno_id = $1
+           AND tipo = $2
            AND estado = 'pendiente'
          LIMIT 1`,
-        [alumno.id]
+        [alumno.id, tipo]
     );
 
     if (pendiente.rows.length > 0) {
@@ -61,6 +67,7 @@ const crearSolicitudCambioPunto = async (client, {
             padre_id,
             conductor_id,
             ruta_id,
+            tipo,
             parada_actual,
             latitude_actual,
             longitude_actual,
@@ -69,13 +76,14 @@ const crearSolicitudCambioPunto = async (client, {
             longitude_nueva,
             motivo
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          RETURNING *`,
         [
             alumno.id,
             padreId,
             alumno.conductor_id || null,
             alumno.ruta_id || null,
+            tipo,
             alumno.parada,
             alumno.latitude,
             alumno.longitude,
@@ -129,6 +137,9 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
                 COALESCE(pr.parada, a.parada) as parada, 
                 COALESCE(pr.latitude, a.latitude) as latitude, 
                 COALESCE(pr.longitude, a.longitude) as longitude,
+                pe.nombre_parada as "entregaParada",
+                pe.latitud as "entregaLatitude",
+                pe.longitud as "entregaLongitude",
                 COALESCE(pr.ruta_id, r.id) as "rutaId", 
                 COALESCE(nr.nombre, r.nombre) as "rutaNombre",
                 COALESCE(nu.nombre, u.nombre) as "conductorNombre", 
@@ -159,6 +170,7 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
                 LIMIT 1
             ) pr ON true
             LEFT JOIN rutas r ON r.id = a.ruta_id
+            LEFT JOIN puntos_ruta pe ON pe.alumno_id = a.id AND pe.tipo = 'entrega'
             LEFT JOIN colegios c_fix ON c_fix.id = a.colegio_id
             LEFT JOIN usuarios u ON u.id = r.conductor_id
             LEFT JOIN rutas nr ON nr.id = pr.ruta_id
@@ -277,6 +289,7 @@ router.post('/hijos/:alumnoId/solicitud-cambio-punto-recogida', authenticateToke
         latitude_nueva,
         longitude_nueva,
         motivo,
+        tipo = 'recogida',
     } = req.body;
 
     if (!Number.isInteger(alumnoId)) {
@@ -285,6 +298,10 @@ router.post('/hijos/:alumnoId/solicitud-cambio-punto-recogida', authenticateToke
 
     const latNueva = normalizarCoordenada(latitude_nueva);
     const lngNueva = normalizarCoordenada(longitude_nueva);
+    const tipoPunto = normalizarTipoPunto(tipo);
+    if (!tipoPunto) {
+        return res.status(400).json({ error: 'tipo debe ser recogida o entrega' });
+    }
     if (latNueva === null || lngNueva === null) {
         return res.status(400).json({ error: 'latitude_nueva y longitude_nueva son requeridos' });
     }
@@ -338,6 +355,7 @@ router.post('/hijos/:alumnoId/solicitud-cambio-punto-recogida', authenticateToke
             latitudeNueva: latNueva,
             longitudeNueva: lngNueva,
             motivo,
+            tipo: tipoPunto,
         });
 
         await client.query('COMMIT');
@@ -399,6 +417,10 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
 
     const latSolicitada = normalizarCoordenada(latitude);
     const lngSolicitada = normalizarCoordenada(longitude);
+    const tipoPunto = normalizarTipoPunto(tipo);
+    if (!tipoPunto) {
+        return res.status(400).json({ error: 'tipo debe ser recogida o entrega' });
+    }
     if (latSolicitada === null || lngSolicitada === null) {
         return res.status(400).json({ error: 'latitude y longitude deben ser numeros validos' });
     }
@@ -450,6 +472,117 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
         const paradaSolicitada = tieneTexto(parada) ? String(parada) : null;
         const paradaGenerada = `Punto ${latSolicitada.toFixed(5)}, ${lngSolicitada.toFixed(5)}`;
         const paradaNueva = paradaSolicitada || paradaGenerada;
+
+        if (tipoPunto === 'entrega') {
+            const idsEntrega = alumnosAActualizar.rows.map((alumno) => alumno.id);
+            const puntosActuales = await client.query(
+                `SELECT alumno_id, ruta_id, nombre_parada, latitud, longitud, orden
+                 FROM puntos_ruta
+                 WHERE alumno_id = ANY($1::int[])
+                   AND tipo = 'entrega'`,
+                [idsEntrega]
+            );
+            const puntosPorAlumno = new Map(puntosActuales.rows.map((punto) => [Number(punto.alumno_id), punto]));
+            const directos = [];
+            const solicitudesEntrega = [];
+
+            for (const alumno of alumnosAActualizar.rows) {
+                if (!alumno.conductor_id || !alumno.ruta_id) {
+                    await client.query('ROLLBACK');
+                    return res.status(409).json({
+                        error: 'El punto de entrega requiere conductor asignado',
+                        codigo: 'CONDUCTOR_NO_ASIGNADO',
+                        alumnos: [{ id: alumno.id, nombre: alumno.nombre }]
+                    });
+                }
+
+                const puntoActual = puntosPorAlumno.get(Number(alumno.id));
+                if (!puntoActual) {
+                    directos.push(alumno);
+                    continue;
+                }
+
+                const cambiaParada = paradaSolicitada !== null && paradaSolicitada !== puntoActual.nombre_parada;
+                const cambiaLatitud = !coordenadaIgual(puntoActual.latitud, latSolicitada);
+                const cambiaLongitud = !coordenadaIgual(puntoActual.longitud, lngSolicitada);
+
+                if (cambiaParada || cambiaLatitud || cambiaLongitud) {
+                    const solicitud = await crearSolicitudCambioPunto(client, {
+                        alumno: {
+                            ...alumno,
+                            parada: puntoActual.nombre_parada,
+                            latitude: puntoActual.latitud,
+                            longitude: puntoActual.longitud,
+                        },
+                        padreId,
+                        paradaNueva,
+                        latitudeNueva: latSolicitada,
+                        longitudeNueva: lngSolicitada,
+                        motivo: 'Cambio de punto de entrega solicitado por el padre desde el mapa',
+                        tipo: 'entrega',
+                    });
+                    solicitudesEntrega.push(solicitud);
+                }
+            }
+
+            const puntosGuardados = [];
+            for (const alumno of directos) {
+                const punto = await guardarPuntoRutaAlumno({
+                    alumnoId: alumno.id,
+                    rutaId: alumno.ruta_id,
+                    tipo: 'entrega',
+                    latitud: latSolicitada,
+                    longitud: lngSolicitada,
+                    orden: 2000 + Number(alumno.id),
+                    nombreParada: paradaNueva,
+                }, client);
+                if (punto) puntosGuardados.push(punto);
+            }
+
+            await client.query('COMMIT');
+
+            for (const alumno of directos) {
+                autoNombrarRuta(alumno.ruta_id).catch(e => console.error('Error auto-nombrando:', e));
+            }
+
+            if (solicitudesEntrega.length > 0) {
+                for (const solicitud of solicitudesEntrega) {
+                    enviarNotificacionPush(
+                        solicitud.conductor_id,
+                        'Solicitud de cambio de punto',
+                        'Hay un nuevo punto de entrega pendiente de autorizacion.',
+                        { tipo: 'solicitud_cambio_punto_entrega', solicitudId: solicitud.id, alumnoId: solicitud.alumno_id, rutaId: solicitud.ruta_id }
+                    ).catch(err => console.error('Error notificando cambio de punto al conductor:', err.message));
+
+                    if (req.io && solicitud.ruta_id) {
+                        req.io.to(`ruta:${solicitud.ruta_id}`).emit('solicitud:cambio_punto_recogida', {
+                            solicitudId: solicitud.id,
+                            alumnoId: solicitud.alumno_id,
+                            estado: solicitud.estado,
+                            tipo: 'entrega',
+                        });
+                    }
+                }
+
+                return res.status(202).json({
+                    mensaje: puntosGuardados.length > 0
+                        ? 'Puntos de entrega iniciales guardados y solicitudes de cambio enviadas'
+                        : 'Solicitud de cambio de punto de entrega enviada al conductor',
+                    codigo: 'CAMBIO_PUNTO_ENTREGA_PENDIENTE_APROBACION',
+                    solicitudes: solicitudesEntrega,
+                    puntos: puntosGuardados,
+                    idsActualizados: directos.map((alumno) => alumno.id),
+                });
+            }
+
+            return res.json({
+                mensaje: aplicarATodos
+                    ? 'Punto de entrega actualizado para todos los hijos'
+                    : 'Punto de entrega definido correctamente',
+                puntos: puntosGuardados,
+                idsActualizados: directos.map((alumno) => alumno.id),
+            });
+        }
 
         const aActualizarDirecto = [];
         const aCrearSolicitud = [];

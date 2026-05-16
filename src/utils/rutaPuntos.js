@@ -58,6 +58,37 @@ const sincronizarPuntoAlumno = async (alumnoId, client = pool) => {
     return punto.rows[0] || null;
 };
 
+const guardarPuntoRutaAlumno = async ({
+    alumnoId,
+    rutaId,
+    tipo = 'recogida',
+    latitud,
+    longitud,
+    orden = 1000,
+    nombreParada,
+}, client = pool) => {
+    const lat = normalizarNumero(latitud);
+    const lng = normalizarNumero(longitud);
+
+    if (!alumnoId || !rutaId || lat === null || lng === null) return null;
+
+    await client.query(
+        `DELETE FROM puntos_ruta
+         WHERE alumno_id = $1
+           AND tipo = $2`,
+        [alumnoId, tipo]
+    );
+
+    const punto = await client.query(
+        `INSERT INTO puntos_ruta (ruta_id, alumno_id, tipo, latitud, longitud, orden, nombre_parada)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING *`,
+        [rutaId, alumnoId, tipo, lat, lng, orden, nombreParada || `Punto ${tipo}`]
+    );
+
+    return punto.rows[0] || null;
+};
+
 const sincronizarPuntosRuta = async (rutaId, client = pool) => {
     if (!rutaId) return [];
 
@@ -94,6 +125,7 @@ const sincronizarPuntosRuta = async (rutaId, client = pool) => {
 };
 
 module.exports = {
+    guardarPuntoRutaAlumno,
     sincronizarPuntoAlumno,
     sincronizarPuntosRuta,
 };

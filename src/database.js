@@ -57,6 +57,7 @@ const prepararEsquemaUnaVez = async () => {
                 padre_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
                 conductor_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
                 ruta_id INTEGER REFERENCES rutas(id) ON DELETE SET NULL,
+                tipo VARCHAR(20) NOT NULL DEFAULT 'recogida',
                 parada_actual VARCHAR(150) NOT NULL,
                 latitude_actual DECIMAL(10,8) NOT NULL,
                 longitude_actual DECIMAL(11,8) NOT NULL,
@@ -87,12 +88,22 @@ const prepararEsquemaUnaVez = async () => {
 
             ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS alumno_id INTEGER REFERENCES alumnos(id);
             ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'recogida';
+            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS latitud DECIMAL(10,8);
+            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS longitud DECIMAL(11,8);
+            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS orden INTEGER NOT NULL DEFAULT 1000;
+            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS nombre_parada VARCHAR(100);
+            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT NOW();
+
+            ALTER TABLE solicitudes_cambio_punto_recogida
+            ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) NOT NULL DEFAULT 'recogida';
 
             CREATE INDEX IF NOT EXISTS idx_solicitudes_cambio_punto_conductor_estado
             ON solicitudes_cambio_punto_recogida (conductor_id, estado, created_at DESC);
 
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_solicitud_cambio_punto_pendiente_alumno
-            ON solicitudes_cambio_punto_recogida (alumno_id)
+            DROP INDEX IF EXISTS idx_solicitud_cambio_punto_pendiente_alumno;
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_solicitud_cambio_punto_pendiente_alumno_tipo
+            ON solicitudes_cambio_punto_recogida (alumno_id, tipo)
             WHERE estado = 'pendiente';
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_puntos_ruta_alumno_tipo
