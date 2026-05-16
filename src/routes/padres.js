@@ -563,6 +563,14 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
 
     } catch (error) {
         await client.query('ROLLBACK');
+        console.error('[GEOPOSICIONAMIENTO] Error crítico guardando punto:', {
+            mensaje: error.message,
+            codigo: error.codigo || error.code,
+            alumnoId,
+            padreId,
+            stack: error.stack
+        });
+
         if (error.codigo === 'SOLICITUD_CAMBIO_PUNTO_PENDIENTE' || error.code === '23505') {
             return res.status(409).json({
                 error: error.codigo ? error.message : 'Ya existe una solicitud pendiente para este alumno',
@@ -570,8 +578,11 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
                 solicitudId: error.solicitudId
             });
         }
-        console.error('Error guardando punto de recogida:', error);
-        res.status(500).json({ error: 'Error interno del servidor' });
+        res.status(500).json({ 
+            error: 'Error interno del servidor al guardar el punto',
+            detalle: error.message,
+            paso: 'guardado_punto_recogida'
+        });
     } finally {
         client.release();
     }

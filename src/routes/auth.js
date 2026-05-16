@@ -227,22 +227,10 @@ router.post('/registro', async (req, res) => {
         if (rol === 'padre' && alumnoNombre) {
             let rutaId = null;
             if (conductorId) {
-                const rutaRes = await client.query('SELECT id FROM rutas WHERE conductor_id = $1 AND activa = true LIMIT 1', [conductorId]);
-                rutaId = rutaRes.rows[0]?.id || null;
-
-                // Si el conductor no tiene ruta, crearla automáticamente para que el alumno quede vinculado
-                if (!rutaId) {
-                    const conductorRes = await client.query('SELECT nombre, colegio_id FROM usuarios WHERE id = $1', [conductorId]);
-                    if (conductorRes.rows.length > 0) {
-                        const cond = conductorRes.rows[0];
-                        const nuevaRutaRes = await client.query(
-                            `INSERT INTO rutas (nombre, conductor_id, colegio_id, activa)
-                             VALUES ($1, $2, $3, true) RETURNING id`,
-                            [`Ruta de ${cond.nombre}`, conductorId, cond.colegio_id || colegioId]
-                        );
-                        rutaId = nuevaRutaRes.rows[0].id;
-                        console.log(`[REGISTRO] Ruta creada automáticamente para conductor ${conductorId}`);
-                    }
+                const { obtenerOCrearRutaConductor } = require('../controllers/asignacionesController');
+                const rutas = await obtenerOCrearRutaConductor(conductorId);
+                if (rutas && rutas.length > 0) {
+                    rutaId = rutas[0].id;
                 }
             }
 
@@ -256,7 +244,18 @@ router.post('/registro', async (req, res) => {
             );
             nuevoAlumno = alumnoRes.rows[0];
 
-            await client.query(`INSERT INTO alumno_padres (alumno_id, padre_id, rol) VALUES ($1, $2, 'principal')`, [nuevoAlumno.id, usuario.id]);
+            await client.query(
+                `INSERT INTO alumno_padres (alumno_id, padre_id, rol)
+                 VALUES ($1, $2, 'principal')
+                 ON CONFLICT (alumno_id, padre_id) DO NOTHING`,
+                [nuevoAlumno.id, usuario.id]
+            );
+
+            // Sincronizar punto si el alumno ya tuviera geoposición (en registro es raro, pero por consistencia)
+            if (nuevoAlumno.latitude && nuevoAlumno.longitude && rutaId) {
+                const { sincronizarPuntoAlumno } = require('../utils/rutaPuntos');
+                await sincronizarPuntoAlumno(nuevoAlumno.id, client);
+            }
         }
 
         // 4.5. Vincular Alumnos Huérfanos por Email

@@ -309,6 +309,12 @@ const vincularConCodigoHandler = async (req, res) => {
                         'UPDATE alumnos SET ruta_id = $1, colegio_id = COALESCE($2, colegio_id) WHERE id = ANY($3::int[])',
                         [rutaId, colegioId, hijosIds]
                     );
+                    
+                    // Asegurar que tengan puntos en la tabla puntos_ruta si ya tenían GPS
+                    const { sincronizarPuntoAlumno } = require('../utils/rutaPuntos');
+                    for (const id of hijosIds) {
+                        await sincronizarPuntoAlumno(id, client);
+                    }
                 }
                 studentResponse = hijos.rows[0];
             }
