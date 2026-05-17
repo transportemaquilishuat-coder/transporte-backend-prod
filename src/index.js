@@ -9,6 +9,7 @@ dotenv.config();
 const pool = require('./database');
 const { calcularDistancia } = require('./utils/geoUtils');
 const { enviarNotificacionPush } = require('./utils/notificaciones');
+const { sincronizarPuntosRuta } = require('./utils/rutaPuntos');
 
 const app = express();
 const server = http.createServer(app);
@@ -283,12 +284,15 @@ io.on('connection', (socket) => {
     });
 
     // 🟢 Inicio de ruta
-    socket.on('conductor:inicio_ruta', (datos) => {
+    socket.on('conductor:inicio_ruta', async (datos) => {
         ubicacionBus.activo = true;
         ubicacionBus.rutaId = datos.rutaId || ubicacionBus.rutaId || null;
         ubicacionBus.sentido = datos.sentido || ubicacionBus.sentido || null;
 
         if (datos.rutaId) {
+            // Sincronizar puntos de la ruta al iniciar para asegurar que estÃ©n actualizados
+            await sincronizarPuntosRuta(datos.rutaId).catch(e => console.error('Error sincronizando ruta al inicio:', e));
+
             io.to(`ruta:${datos.rutaId}`).emit('bus:inicio_ruta', datos);
             pool.query(
                 `INSERT INTO eventos_ruta (ruta_id, conductor_id, tipo, descripcion)
