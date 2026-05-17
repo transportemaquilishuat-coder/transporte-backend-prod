@@ -94,9 +94,15 @@ const sincronizarPuntosRuta = async (rutaId, client = pool) => {
 
     const alumnos = await client.query(
         `SELECT id
-         FROM alumnos
+         FROM alumnos a
          WHERE ruta_id = $1
-           AND activo = true`,
+           AND activo = true
+           AND NOT EXISTS (
+               SELECT 1 FROM ausencias au
+               WHERE au.alumno_id = a.id
+                 AND au.estado = 'autorizado'
+                 AND CURRENT_DATE BETWEEN au.fecha AND COALESCE(au.fecha_fin, au.fecha)
+           )`,
         [rutaId]
     );
 
@@ -111,12 +117,20 @@ const sincronizarPuntosRuta = async (rutaId, client = pool) => {
          WHERE pr.ruta_id = $1
            AND pr.tipo = 'recogida'
            AND pr.alumno_id IS NOT NULL
-           AND NOT EXISTS (
-               SELECT 1
-               FROM alumnos a
-               WHERE a.id = pr.alumno_id
-                 AND a.ruta_id = pr.ruta_id
-                 AND a.activo = true
+           AND (
+               NOT EXISTS (
+                   SELECT 1
+                   FROM alumnos a
+                   WHERE a.id = pr.alumno_id
+                     AND a.ruta_id = pr.ruta_id
+                     AND a.activo = true
+               )
+               OR EXISTS (
+                   SELECT 1 FROM ausencias au
+                   WHERE au.alumno_id = pr.alumno_id
+                     AND au.estado = 'autorizado'
+                     AND CURRENT_DATE BETWEEN au.fecha AND COALESCE(au.fecha_fin, au.fecha)
+               )
            )`,
         [rutaId]
     );

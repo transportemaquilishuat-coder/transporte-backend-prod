@@ -46,8 +46,8 @@ router.post('/', authenticateToken, requireRole('padre'), async (req, res) => {
 
         const resultado = await pool.query(
             `INSERT INTO programacion_rutas 
-                (alumno_id, fecha, ruta_id, parada, latitude, longitude, tipo, nota, creado_por)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                (alumno_id, fecha, ruta_id, parada, latitude, longitude, tipo, nota, creado_por, estado)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pendiente')
              ON CONFLICT (alumno_id, fecha, tipo) 
              DO UPDATE SET 
                 ruta_id = EXCLUDED.ruta_id,
@@ -55,6 +55,7 @@ router.post('/', authenticateToken, requireRole('padre'), async (req, res) => {
                 latitude = EXCLUDED.latitude,
                 longitude = EXCLUDED.longitude,
                 nota = EXCLUDED.nota,
+                estado = 'pendiente',
                 creado_en = NOW()
              RETURNING *`,
             [alumno_id, fecha, ruta_id || null, parada || null, latitude || null, longitude || null, tipo || 'ambos', nota || null, req.user.id]

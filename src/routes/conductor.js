@@ -247,4 +247,117 @@ router.post('/solicitudes-cambio-punto-recogida/:solicitudId/rechazar', authenti
     }
 });
 
+// GET /api/conductor/ausencias-pendientes
+router.get('/ausencias-pendientes', authenticateToken, requireRole('conductor'), async (req, res) => {
+    const conductorId = req.user.id;
+    try {
+        const resultado = await pool.query(
+            `SELECT au.*, a.nombre AS alumno_nombre, p.nombre AS padre_nombre
+             FROM ausencias au
+             JOIN alumnos a ON a.id = au.alumno_id
+             JOIN usuarios p ON p.id = au.padre_id
+             JOIN rutas r ON r.id = a.ruta_id
+             WHERE r.conductor_id = $1 AND au.estado = 'pendiente' AND au.fecha >= CURRENT_DATE
+             ORDER BY au.fecha ASC`,
+            [conductorId]
+        );
+        res.json({ ausencias: resultado.rows });
+    } catch (error) {
+        res.status(500).json({ error: 'Error obteniendo ausencias pendientes' });
+    }
+});
+
+// POST /api/conductor/ausencias/:id/responder
+router.post('/ausencias/:id/responder', authenticateToken, requireRole('conductor'), async (req, res) => {
+    const { id } = req.params;
+    const { estado, respuesta_conductor } = req.body; // 'autorizado' o 'rechazado'
+
+    if (!['autorizado', 'rechazado'].includes(estado)) {
+        return res.status(400).json({ error: 'estado invalido' });
+    }
+
+    try {
+        const resultado = await pool.query(
+            `UPDATE ausencias
+             SET estado = $1, respuesta_conductor = $2, respondido_at = NOW()
+             WHERE id = $3
+             RETURNING *`,
+            [estado, respuesta_conductor || null, id]
+        );
+
+        if (resultado.rows.length === 0) {
+            return res.status(404).json({ error: 'Ausencia no encontrada' });
+        }
+
+        const ausencia = resultado.rows[0];
+        enviarNotificacionAlumno(
+            ausencia.alumno_id,
+            `Ausencia ${estado}`,
+            `El conductor ha ${estado} el reporte de ausencia para el dia ${ausencia.fecha}.`
+        ).catch(() => {});
+
+        res.json({ mensaje: `Ausencia ${estado}`, ausencia });
+    } catch (error) {
+        res.status(500).json({ error: 'Error respondiendo a la ausencia' });
+    }
+});
+
+// GET /api/conductor/programaciones-pendientes
+router.get('/programaciones-pendientes', authenticateToken, requireRole('conductor'), async (req, res) => {
+    const conductorId = req.user.id;
+    try {
+        const resultado = await pool.query(
+            `SELECT pr.*, a.nombre AS alumno_nombre, p.nombre AS padre_nombre, r_dest.nombre as ruta_destino_nombre
+             FROM programacion_rutas pr
+             JOIN alumnos a ON a.id = pr.alumno_id
+             JOIN usuarios p ON p.id = pr.creado_por
+             LEFT JOIN rutas r_dest ON r_dest.id = pr.ruta_id
+             -- Se asume que el conductor actual es el de la ruta original del alumno o el de la ruta destino
+             LEFT JOIN rutas r_orig ON r_orig.id = a.ruta_id
+             WHERE (r_orig.conductor_id = $1 OR r_dest.conductor_id = $1)
+               AND pr.estado = 'pendiente' AND pr.fecha >= CURRENT_DATE
+             ORDER BY pr.fecha ASC`,
+            [conductorId]
+        );
+        res.json({ programaciones: resultado.rows });
+    } catch (error) {
+        res.status(500).json({ error: 'Error obteniendo programaciones pendientes' });
+    }
+});
+
+// POST /api/conductor/programaciones/:id/responder
+router.post('/programaciones/:id/responder', authenticateToken, requireRole('conductor'), async (req, res) => {
+    const { id } = req.params;
+    const { estado, respuesta_conductor } = req.body; // 'aprobado' o 'rechazado'
+
+    if (!['aprobado', 'rechazado'].includes(estado)) {
+        return res.status(400).json({ error: 'estado invalido' });
+    }
+
+    try {
+        const resultado = await pool.query(
+            `UPDATE programacion_rutas
+             SET estado = $1, respuesta_conductor = $2, respondido_at = NOW()
+             WHERE id = $3
+             RETURNING *`,
+            [estado, respuesta_conductor || null, id]
+        );
+
+        if (resultado.rows.length === 0) {
+            return res.status(404).json({ error: 'Programacion no encontrada' });
+        }
+
+        const pr = resultado.rows[0];
+        enviarNotificacionAlumno(
+            pr.alumno_id,
+            `Cambio de ruta ${estado}`,
+            `El conductor ha ${estado} el cambio de ruta para el dia ${pr.fecha}.`
+        ).catch(() => {});
+
+        res.json({ mensaje: `Programacion ${estado}`, programacion: pr });
+    } catch (error) {
+        res.status(500).json({ error: 'Error respondiendo a la programacion' });
+    }
+});
+
 module.exports = router;

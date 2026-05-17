@@ -90,8 +90,15 @@ const crearTablas = async () => {
         fecha DATE DEFAULT CURRENT_DATE,
         fecha_fin DATE,
         hora TIME DEFAULT CURRENT_TIME,
+        estado VARCHAR(20) DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'autorizado', 'rechazado')),
+        respuesta_conductor TEXT,
+        respondido_at TIMESTAMP,
         creado_en TIMESTAMP DEFAULT NOW()
       );
+
+      ALTER TABLE ausencias ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'autorizado', 'rechazado'));
+      ALTER TABLE ausencias ADD COLUMN IF NOT EXISTS respuesta_conductor TEXT;
+      ALTER TABLE ausencias ADD COLUMN IF NOT EXISTS respondido_at TIMESTAMP;
 
       CREATE TABLE IF NOT EXISTS eventos_ruta (
         id SERIAL PRIMARY KEY,
@@ -268,10 +275,17 @@ const crearTablas = async () => {
         longitude DECIMAL(11,8),
         tipo VARCHAR(20) DEFAULT 'ambos',
         nota TEXT,
+        estado VARCHAR(20) DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'aprobado', 'rechazado')),
+        respuesta_conductor TEXT,
+        respondido_at TIMESTAMP,
         creado_por INTEGER REFERENCES usuarios(id),
         creado_en TIMESTAMP DEFAULT NOW(),
         UNIQUE(alumno_id, fecha, tipo)
       );
+
+      ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'aprobado', 'rechazado'));
+      ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS respuesta_conductor TEXT;
+      ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS respondido_at TIMESTAMP;
 
       CREATE TABLE IF NOT EXISTS sedes_educativas (
         id SERIAL PRIMARY KEY,

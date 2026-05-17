@@ -127,11 +127,18 @@ const alumnosPorConductor = async (req, res) => {
              LEFT JOIN LATERAL (
                 SELECT * FROM programacion_rutas 
                 WHERE alumno_id = a.id AND fecha = CURRENT_DATE
+                AND estado = 'aprobado'
                 AND ($2::text IS NULL OR tipo = $2 OR tipo = 'ambos')
                 ORDER BY CASE WHEN tipo = 'ambos' THEN 2 ELSE 1 END
                 LIMIT 1
              ) pr ON true
              WHERE a.activo = true
+               AND NOT EXISTS (
+                 SELECT 1 FROM ausencias au 
+                 WHERE au.alumno_id = a.id 
+                   AND au.estado = 'autorizado'
+                   AND CURRENT_DATE BETWEEN au.fecha AND COALESCE(au.fecha_fin, au.fecha)
+               )
                AND (
                  (pr.id IS NULL AND a.ruta_id = ANY($1::int[])) OR
                  (pr.id IS NOT NULL AND pr.ruta_id = ANY($1::int[]))
@@ -161,7 +168,7 @@ const alumnosPorConductor = async (req, res) => {
 };
 
 const reportarAusencia = async (req, res) => {
-    const { alumnoId, padreNombre, motivo } = req.body;
+    const { alumnoId, motivo, fecha, fecha_fin } = req.body;
 
     if (!alumnoId) {
         return res.status(400).json({ error: 'alumnoId es requerido' });
@@ -189,9 +196,11 @@ const reportarAusencia = async (req, res) => {
         if (inicio && hoy < inicio) return res.status(403).json({ error: 'El servicio aún no ha comenzado' });
         if (fin && hoy > fin) return res.status(403).json({ error: 'El servicio ha finalizado' });
 
+        const fechaAusencia = fecha || new Date().toISOString().split('T')[0];
+
         const existente = await pool.query(
-            `SELECT * FROM ausencias WHERE alumno_id = $1 AND fecha = CURRENT_DATE`,
-            [alumnoId]
+            `SELECT * FROM ausencias WHERE alumno_id = $1 AND fecha = $2`,
+            [alumnoId, fechaAusencia]
         );
 
         if (existente.rows.length > 0) {
@@ -199,17 +208,24 @@ const reportarAusencia = async (req, res) => {
         }
 
         const resultado = await pool.query(
-            `INSERT INTO ausencias (alumno_id, padre_id, motivo, fecha, hora)
-             VALUES ($1, $2, $3, CURRENT_DATE, CURRENT_TIME)
+            `INSERT INTO ausencias (alumno_id, padre_id, motivo, fecha, fecha_fin, hora, estado)
+             VALUES ($1, $2, $3, $4, $5, CURRENT_TIME, 'pendiente')
              RETURNING *`,
-            [alumnoId, alumno.padre_id, motivo || 'Sin especificar']
+            [alumnoId, alumno.padre_id, motivo || 'Sin especificar', fechaAusencia, fecha_fin || null]
         );
 
         if (req.io && alumno.ruta_id) {
-            req.io.to(`ruta:${alumno.ruta_id}`).emit('alumno:ausencia', { alumnoId, ausente: true });
+            req.io.to(`ruta:${alumno.ruta_id}`).emit('alumno:ausencia_pendiente', { 
+                alumnoId, 
+                ausenciaId: resultado.rows[0].id,
+                fecha: fechaAusencia 
+            });
         }
 
-        res.json({ mensaje: 'Ausencia reportada', ausencia: resultado.rows[0] });
+        res.json({ 
+            mensaje: 'Ausencia reportada y pendiente de autorizacion por el conductor', 
+            ausencia: resultado.rows[0] 
+        });
     } catch (error) {
         console.error('Error reportarAusencia:', error.message);
         res.status(500).json({ error: 'Error reportando ausencia' });
