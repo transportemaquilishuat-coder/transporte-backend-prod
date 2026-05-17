@@ -601,13 +601,20 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
         const aCrearSolicitud = [];
 
         for (const alumno of alumnosAActualizar.rows) {
-            // Todos los cambios de punto deben ser autorizados por el conductor
-            const cambiaParada = paradaSolicitada !== null && tieneTexto(alumno.parada) && paradaSolicitada !== alumno.parada;
-            const cambiaLatitud = !coordenadaIgual(alumno.latitude, latSolicitada);
-            const cambiaLongitud = !coordenadaIgual(alumno.longitude, lngSolicitada);
-            
-            if (cambiaParada || cambiaLatitud || cambiaLongitud || alumno.latitude === null) {
-                aCrearSolicitud.push(alumno);
+            const tieneGPS = alumno.latitude !== null && alumno.longitude !== null;
+
+            if (!tieneGPS) {
+                // PRIMERA VEZ: Se permite geoposicionar directamente
+                aActualizarDirecto.push(alumno.id);
+            } else {
+                // SEGUNDA VEZ O MÁS: Requiere autorización del conductor
+                const cambiaParada = paradaSolicitada !== null && tieneTexto(alumno.parada) && paradaSolicitada !== alumno.parada;
+                const cambiaLatitud = !coordenadaIgual(alumno.latitude, latSolicitada);
+                const cambiaLongitud = !coordenadaIgual(alumno.longitude, lngSolicitada);
+
+                if (cambiaParada || cambiaLatitud || cambiaLongitud) {
+                    aCrearSolicitud.push(alumno);
+                }
             }
         }
 
