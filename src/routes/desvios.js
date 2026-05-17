@@ -107,7 +107,7 @@ router.post('/verificar', async (req, res) => {
             return res.json({ desviado: false, mensaje: 'Sin ruta programada' });
 
         const distancia = distanciaALaRuta(latitude, longitude, puntos);
-        const LIMITE_METROS = 200;
+        const LIMITE_METROS = 300; // Aumentado de 200 a 300 para reducir falsos positivos
         const desviado = distancia > LIMITE_METROS;
 
         // Si está desviado, guardar alerta
