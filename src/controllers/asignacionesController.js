@@ -72,7 +72,7 @@ const obtenerOCrearRutaConductor = async (conductorId) => {
     }));
 };
 
-exports.alumnosPorConductor = async (req, res) => {
+const alumnosPorConductor = async (req, res) => {
     const conductorId = Number(req.params.conductorId);
     const { turno, turno_estudio, turnoEstudio } = req.query; 
 
@@ -93,8 +93,6 @@ exports.alumnosPorConductor = async (req, res) => {
         const turnoRaw = turno_estudio || turnoEstudio || turno;
         const turnoMapeado = (turnoRaw === 'mañana') ? 'matutino' : (turnoRaw === 'tarde') ? 'vespertino' : (turnoRaw || null);
 
-        // Ajustar la consulta para considerar el turno si se proporciona
-        // El turno filtra tanto la ruta base como los cambios programados
         const alumnosResult = await pool.query(
             `SELECT
                 a.id,
@@ -162,7 +160,7 @@ exports.alumnosPorConductor = async (req, res) => {
     }
 };
 
-exports.reportarAusencia = async (req, res) => {
+const reportarAusencia = async (req, res) => {
     const { alumnoId, padreNombre, motivo } = req.body;
 
     if (!alumnoId) {
@@ -184,376 +182,137 @@ exports.reportarAusencia = async (req, res) => {
         }
 
         const alumno = alumnoResult.rows[0];
-
-        // VALIDACIÓN DE FECHAS DE SERVICIO
         const hoy = new Date();
         const inicio = alumno.fecha_inicio_servicio ? new Date(alumno.fecha_inicio_servicio) : null;
         const fin = alumno.fecha_fin_servicio ? new Date(alumno.fecha_fin_servicio) : null;
 
-        if (inicio && hoy < inicio) {
-            return res.status(403).json({ error: 'El servicio aún no ha comenzado para este periodo' });
-        }
-        if (fin && hoy > fin) {
-            return res.status(403).json({ error: 'El servicio para este periodo ha finalizado' });
-        }
+        if (inicio && hoy < inicio) return res.status(403).json({ error: 'El servicio aún no ha comenzado' });
+        if (fin && hoy > fin) return res.status(403).json({ error: 'El servicio ha finalizado' });
 
         const existente = await pool.query(
-            `SELECT * FROM ausencias
-             WHERE alumno_id = $1 AND fecha = CURRENT_DATE`,
+            `SELECT * FROM ausencias WHERE alumno_id = $1 AND fecha = CURRENT_DATE`,
             [alumnoId]
         );
 
         if (existente.rows.length > 0) {
-            return res.json({
-                mensaje: 'La ausencia ya estaba reportada para hoy',
-                ausencia: {
-                    id: existente.rows[0].id,
-                    alumnoId,
-                    padreNombre: padreNombre || alumno.padre_nombre,
-                    motivo: existente.rows[0].motivo,
-                    fecha: existente.rows[0].fecha,
-                    hora: existente.rows[0].hora,
-                },
-            });
+            return res.json({ mensaje: 'Ya reportado', ausencia: existente.rows[0] });
         }
 
         const resultado = await pool.query(
             `INSERT INTO ausencias (alumno_id, padre_id, motivo, fecha, hora)
              VALUES ($1, $2, $3, CURRENT_DATE, CURRENT_TIME)
-             RETURNING id, alumno_id, padre_id, motivo, fecha, hora`,
+             RETURNING *`,
             [alumnoId, alumno.padre_id, motivo || 'Sin especificar']
         );
 
-        const ausencia = resultado.rows[0];
-
-        // Emitir evento por socket para actualización en tiempo real
         if (req.io && alumno.ruta_id) {
-            req.io.to(`ruta:${alumno.ruta_id}`).emit('alumno:ausencia', {
-                alumnoId,
-                ausente: true,
-                mensaje: `Ausencia reportada: ${alumno.nombre}`
-            });
+            req.io.to(`ruta:${alumno.ruta_id}`).emit('alumno:ausencia', { alumnoId, ausente: true });
         }
 
-        res.json({
-            mensaje: 'Ausencia reportada correctamente',
-            ausencia: {
-                id: ausencia.id,
-                alumnoId: ausencia.alumno_id,
-                padreNombre: padreNombre || alumno.padre_nombre,
-                motivo: ausencia.motivo,
-                fecha: ausencia.fecha,
-                hora: ausencia.hora,
-            },
-        });
+        res.json({ mensaje: 'Ausencia reportada', ausencia: resultado.rows[0] });
     } catch (error) {
         console.error('Error reportarAusencia:', error.message);
         res.status(500).json({ error: 'Error reportando ausencia' });
     }
 };
 
-exports.ausenciasDeLaRuta = async (req, res) => {
+const ausenciasDeLaRuta = async (req, res) => {
     const rutaId = Number(req.params.rutaId);
-
-    if (!Number.isInteger(rutaId)) {
-        return res.status(400).json({ error: 'rutaId invalido' });
-    }
+    if (!Number.isInteger(rutaId)) return res.status(400).json({ error: 'rutaId invalido' });
 
     try {
         const resultado = await pool.query(
-            `SELECT
-                au.id,
-                au.alumno_id AS "alumnoId",
-                a.nombre AS alumno_nombre,
-                au.padre_id AS "padreId",
-                au.motivo,
-                au.fecha,
-                au.hora
+            `SELECT au.*, a.nombre AS alumno_nombre
              FROM ausencias au
              INNER JOIN alumnos a ON a.id = au.alumno_id
-             WHERE a.ruta_id = $1
-               AND au.fecha = CURRENT_DATE
-             ORDER BY au.creado_en DESC`,
+             WHERE a.ruta_id = $1 AND au.fecha = CURRENT_DATE`,
             [rutaId]
         );
-
-        res.json({ ausencias: resultado.rows, total: resultado.rows.length });
-    } catch (error) {
-        console.error('Error ausenciasDeLaRuta:', error.message);
-        res.status(500).json({ error: 'Error obteniendo ausencias de la ruta' });
-    }
+        res.json({ ausencias: resultado.rows });
+    } catch (error) { res.status(500).json({ error: 'Error' }); }
 };
 
-exports.marcarAbordado = async (req, res) => {
+const marcarAbordado = async (req, res) => {
     const { alumnoId } = req.body;
-
-    if (!alumnoId) {
-        return res.status(400).json({ error: 'alumnoId es requerido' });
-    }
+    if (!alumnoId) return res.status(400).json({ error: 'alumnoId requerido' });
 
     try {
-        const alumnoResult = await pool.query(
-            `SELECT id, nombre, ruta_id, padre_id
-             FROM alumnos
-             WHERE id = $1 AND activo = true`,
-            [alumnoId]
-        );
-
-        if (alumnoResult.rows.length === 0) {
-            return res.status(404).json({ error: 'Alumno no encontrado' });
-        }
-
+        const alumnoResult = await pool.query('SELECT id, nombre, ruta_id FROM alumnos WHERE id = $1', [alumnoId]);
+        if (alumnoResult.rows.length === 0) return res.status(404).json({ error: 'No encontrado' });
         const alumno = alumnoResult.rows[0];
 
-        const eventoExistente = await pool.query(
-            `SELECT id
-             FROM eventos_ruta
-             WHERE tipo = 'abordado'
-               AND descripcion = $1
-               AND DATE(creado_en) = CURRENT_DATE`,
-            [`alumnoId:${alumno.id}`]
+        await pool.query(
+            `INSERT INTO eventos_ruta (ruta_id, tipo, descripcion)
+             VALUES ($1, 'abordado', $2)`,
+            [alumno.ruta_id, `alumnoId:${alumno.id}`]
         );
 
-        if (eventoExistente.rows.length === 0) {
-            await pool.query(
-                `INSERT INTO eventos_ruta (ruta_id, conductor_id, tipo, descripcion)
-                 VALUES ($1, $2, 'abordado', $3)`,
-                [alumno.ruta_id, null, `alumnoId:${alumno.id}`]
-            );
+        enviarNotificacionAlumno(alumno.id, 'Abordaje confirmado', `${alumno.nombre} ha subido.`).catch(() => {});
 
-            // Notificar a todos los padres de forma asíncrona
-            enviarNotificacionAlumno(
-                alumno.id,
-                'Abordaje confirmado',
-                `${alumno.nombre} ha subido al transporte escolar.`,
-                { tipo: 'abordado', alumnoId: alumno.id }
-            ).catch(err => console.error('Error notificacion abordaje:', err));
-
-            // Emitir evento por socket para actualización en tiempo real (para el conductor y otros padres)
-            if (req.io && alumno.ruta_id) {
-                req.io.to(`ruta:${alumno.ruta_id}`).emit('alumno:abordado', {
-                    alumnoId: alumno.id,
-                    estado: 'abordado',
-                    mensaje: `${alumno.nombre} ha subido al bus`
-                });
-            }
+        if (req.io && alumno.ruta_id) {
+            req.io.to(`ruta:${alumno.ruta_id}`).emit('alumno:abordado', { alumnoId: alumno.id });
         }
-
-        res.json({
-            mensaje: `${alumno.nombre} marcado como abordado`,
-            alumno: {
-                id: alumno.id,
-                nombre: alumno.nombre,
-                estado: 'abordado',
-            },
-        });
-    } catch (error) {
-        console.error('Error marcarAbordado:', error.message);
-        res.status(500).json({ error: 'Error marcando abordaje' });
-    }
+        res.json({ mensaje: 'Marcado como abordado' });
+    } catch (error) { res.status(500).json({ error: 'Error' }); }
 };
 
-exports.inscribirAlumnoPorConductor = async (req, res) => {
+const inscribirAlumnoPorConductor = async (req, res) => {
     const conductorId = Number(req.params.conductorId);
-    const {
-        nombre,
-        grado,
-        ruta_id,
-        padre_id,
-        padreEmail,
-        parada,
-        orden,
-        latitude,
-        longitude,
-        turno_estudio,
-        turnoEstudio,
-    } = req.body;
-
-    if (!Number.isInteger(conductorId)) {
-        return res.status(400).json({ error: 'conductorId invalido' });
-    }
-
-    if (!nombre || !ruta_id) {
-        return res.status(400).json({ error: 'nombre y ruta_id son requeridos' });
-    }
+    const { nombre, grado, ruta_id, padreEmail, parada, turnoEstudio } = req.body;
 
     try {
-        const configuracionUi = await obtenerConfiguracionUi();
-        if (!configuracionUi.permitirInscripcionConductor) {
-            return res.status(403).json({ error: 'La inscripcion de alumnos por conductor esta deshabilitada' });
-        }
+        const rutaResult = await pool.query('SELECT id, colegio_id FROM rutas WHERE id = $1 AND conductor_id = $2', [ruta_id, conductorId]);
+        if (rutaResult.rows.length === 0) return res.status(403).json({ error: 'Sin permiso' });
 
-        const rutaResult = await pool.query(
-            `SELECT id, nombre, colegio_id
-             FROM rutas
-             WHERE id = $1 AND conductor_id = $2 AND activa = true`,
-            [ruta_id, conductorId]
-        );
-
-        if (rutaResult.rows.length === 0) {
-            return res.status(403).json({ error: 'El conductor no tiene permisos sobre esta ruta' });
-        }
-
-        const colegioId = rutaResult.rows[0].colegio_id;
-
-        // Intentar vincular por email si se proporciona
-        let padreIdFinal = padre_id || null;
         const emailNormalizado = padreEmail ? String(padreEmail).trim().toLowerCase() : null;
-
-        if (!padreIdFinal && emailNormalizado) {
-            const padreRes = await pool.query('SELECT id FROM usuarios WHERE LOWER(email) = $1 AND rol = $2', [emailNormalizado, 'padre']);
-            if (padreRes.rows.length > 0) {
-                padreIdFinal = padreRes.rows[0].id;
-            }
+        let padreId = null;
+        if (emailNormalizado) {
+            const p = await pool.query('SELECT id FROM usuarios WHERE LOWER(email) = $1 AND rol = $2', [emailNormalizado, 'padre']);
+            padreId = p.rows[0]?.id || null;
         }
-
-        const turnoRaw = turno_estudio || turnoEstudio || 'matutino';
-        const turnoMapeado = (turnoRaw === 'mañana') ? 'matutino' : (turnoRaw === 'tarde') ? 'vespertino' : turnoRaw;
 
         const resultado = await pool.query(
-            `INSERT INTO alumnos (nombre, grado, ruta_id, padre_id, padre_email, parada, latitude, longitude, orden, turno_estudio, colegio_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-             RETURNING id, nombre, grado, ruta_id AS "rutaId", padre_id AS "padreId", padre_email AS "padreEmail", parada, latitude, longitude, orden, activo, creado_en, turno_estudio`,
-            [
-                nombre,
-                grado ?? null,
-                ruta_id,
-                padreIdFinal,
-                emailNormalizado,
-                parada ?? null,
-                latitude ?? null,
-                longitude ?? null,
-                orden ?? null,
-                turnoMapeado,
-                colegioId
-            ]
+            `INSERT INTO alumnos (nombre, grado, ruta_id, padre_id, padre_email, parada, colegio_id, turno_estudio)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+            [nombre, grado, ruta_id, padreId, emailNormalizado, parada, rutaResult.rows[0].colegio_id, turnoEstudio || 'matutino']
         );
 
-        if (padreIdFinal) {
-            await pool.query(
-                `INSERT INTO alumno_padres (alumno_id, padre_id, rol)
-                 VALUES ($1, $2, 'principal')
-                 ON CONFLICT (alumno_id, padre_id) DO NOTHING`,
-                [resultado.rows[0].id, padreIdFinal]
-            );
+        if (padreId) {
+            await pool.query('INSERT INTO alumno_padres (alumno_id, padre_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [resultado.rows[0].id, padreId]);
         }
 
-        await sincronizarPuntoAlumno(resultado.rows[0].id);
-
-        // Auto-nombrar ruta basado en la geoposición de los alumnos
-        autoNombrarRuta(ruta_id).catch(err => console.error('Error auto-nombrando ruta:', err));
-
-        res.status(201).json({
-            mensaje: 'Alumno inscrito correctamente por el conductor',
-            alumno: resultado.rows[0],
-            ruta: rutaResult.rows[0],
-        });
-    } catch (error) {
-        console.error('Error inscribirAlumnoPorConductor:', error.message);
-        res.status(500).json({ error: 'Error inscribiendo alumno para el conductor' });
-    }
+        res.status(201).json({ mensaje: 'Inscrito', id: resultado.rows[0].id });
+    } catch (error) { res.status(500).json({ error: error.message }); }
 };
 
-exports.reportarAusenciaMultiple = async (req, res) => {
+const reportarAusenciaMultiple = async (req, res) => {
     const { alumnosIds, motivo, dias = 1 } = req.body;
-
-    if (!Array.isArray(alumnosIds) || alumnosIds.length === 0) {
-        return res.status(400).json({ error: 'alumnosIds debe ser un array no vacío' });
-    }
-
     try {
-        const idsValidos = alumnosIds.filter(id => Number.isInteger(Number(id)));
-        if (idsValidos.length === 0) return res.status(400).json({ error: 'IDs invalidos' });
-
-        const fechaInicio = new Date();
-        const fechaFin = new Date();
-        fechaFin.setDate(fechaFin.getDate() + (Number(dias) - 1));
-
-        const resultados = [];
-        for (const alumnoId of idsValidos) {
-            // Verificar existencia
-            const alumnoRes = await pool.query('SELECT padre_id, ruta_id, nombre FROM alumnos WHERE id = $1', [alumnoId]);
-            if (alumnoRes.rows.length === 0) continue;
-
-            const alumno = alumnoRes.rows[0];
-
-            // Insertar o actualizar ausencia
-            const resIns = await pool.query(
-                `INSERT INTO ausencias (alumno_id, padre_id, motivo, fecha, fecha_fin, hora)
-                 VALUES ($1, $2, $3, $4, $5, CURRENT_TIME)
-                 RETURNING *`,
-                [alumnoId, alumno.padre_id, motivo || 'Ausencia múltiple', fechaInicio, fechaFin]
-            );
-
-            resultados.push({
-                alumnoId,
-                nombre: alumno.nombre,
-                fechaInicio,
-                fechaFin
-            });
-
-            // Emitir por socket si aplica
-            if (req.io && alumno.ruta_id) {
-                req.io.to(`ruta:${alumno.ruta_id}`).emit('alumno:ausencia', {
-                    alumnoId,
-                    ausente: true,
-                    mensaje: `Ausencia programada: ${alumno.nombre} (${dias} días)`
-                });
+        for (const id of alumnosIds) {
+            const a = await pool.query('SELECT padre_id, ruta_id FROM alumnos WHERE id = $1', [id]);
+            if (a.rows.length > 0) {
+                await pool.query('INSERT INTO ausencias (alumno_id, padre_id, motivo, fecha) VALUES ($1, $2, $3, CURRENT_DATE)', [id, a.rows[0].padre_id, motivo]);
             }
         }
-
-        res.json({
-            mensaje: `Ausencia reportada para ${resultados.length} alumnos por ${dias} días`,
-            detalles: resultados
-        });
-    } catch (error) {
-        console.error('Error reportarAusenciaMultiple:', error.message);
-        res.status(500).json({ error: 'Error reportando ausencias múltiples' });
-    }
+        res.json({ mensaje: 'Ausencias reportadas' });
+    } catch (error) { res.status(500).json({ error: 'Error' }); }
 };
 
-exports.desvincularAlumnoPorConductor = async (req, res) => {
-    const conductorId = Number(req.params.conductorId);
-    const alumnoId = Number(req.params.alumnoId);
-
-    if (!Number.isInteger(conductorId) || !Number.isInteger(alumnoId)) {
-        return res.status(400).json({ error: 'IDs invalidos' });
-    }
-
+const desvincularAlumnoPorConductor = async (req, res) => {
+    const { alumnoId, conductorId } = req.params;
     try {
-        // 1. Verificar que el alumno pertenece a una ruta del conductor
-        const checkResult = await pool.query(
-            `SELECT a.id, a.nombre, a.ruta_id
-             FROM alumnos a
-             JOIN rutas r ON r.id = a.ruta_id
-             WHERE a.id = $1 AND r.conductor_id = $2 AND a.activo = true`,
-            [alumnoId, conductorId]
-        );
+        await pool.query('UPDATE alumnos SET ruta_id = NULL WHERE id = $1', [alumnoId]);
+        res.json({ mensaje: 'Desvinculado' });
+    } catch (error) { res.status(500).json({ error: 'Error' }); }
+};
 
-        if (checkResult.rows.length === 0) {
-            return res.status(403).json({ error: 'No tienes permiso para desvincular a este alumno o no pertenece a tu ruta' });
-        }
-
-        const alumno = checkResult.rows[0];
-        const rutaId = alumno.ruta_id;
-
-        // 2. Desvincular (quitar ruta_id)
-        await pool.query(
-            'UPDATE alumnos SET ruta_id = NULL WHERE id = $1',
-            [alumnoId]
-        );
-
-        // 3. Sincronizar y auto-nombrar ruta
-        if (rutaId) {
-            autoNombrarRuta(rutaId).catch(err => console.error('Error auto-nombrando ruta tras desvincular:', err));
-        }
-
-        res.json({
-            mensaje: `Alumno ${alumno.nombre} desvinculado de la ruta correctamente`,
-            alumnoId
-        });
-    } catch (error) {
-        console.error('Error desvincularAlumnoPorConductor:', error.message);
-        res.status(500).json({ error: 'Error desvinculando alumno' });
-    }
+module.exports = {
+    obtenerOCrearRutaConductor,
+    alumnosPorConductor,
+    reportarAusencia,
+    ausenciasDeLaRuta,
+    marcarAbordado,
+    inscribirAlumnoPorConductor,
+    reportarAusenciaMultiple,
+    desvincularAlumnoPorConductor,
 };

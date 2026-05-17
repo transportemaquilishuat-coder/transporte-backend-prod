@@ -10,7 +10,7 @@ const sincronizarPuntoAlumno = async (alumnoId, client = pool) => {
     const resultado = await client.query(
         `SELECT id, ruta_id, nombre, parada, latitude, longitude, orden
          FROM alumnos
-         WHERE id = $1`,
+         WHERE id = $1::int`,
         [alumnoId]
     );
 
@@ -23,16 +23,16 @@ const sincronizarPuntoAlumno = async (alumnoId, client = pool) => {
 
     await client.query(
         `DELETE FROM puntos_ruta
-         WHERE alumno_id = $1
+         WHERE alumno_id = $1::int
            AND tipo = 'recogida'
-           AND ($2::integer IS NULL OR ruta_id <> $2)`,
+           AND ($2::integer IS NULL OR ruta_id <> $2::int)`,
         [alumno.id, rutaId || null]
     );
 
     if (!rutaId || latitud === null || longitud === null) {
         await client.query(
             `DELETE FROM puntos_ruta
-             WHERE alumno_id = $1
+             WHERE alumno_id = $1::int
                AND tipo = 'recogida'`,
             [alumno.id]
         );
@@ -44,13 +44,13 @@ const sincronizarPuntoAlumno = async (alumnoId, client = pool) => {
 
     // Usar DELETE seguido de INSERT para evitar problemas con ON CONFLICT y índices parciales
     await client.query(
-        `DELETE FROM puntos_ruta WHERE alumno_id = $1 AND tipo = 'recogida'`,
+        `DELETE FROM puntos_ruta WHERE alumno_id = $1::int AND tipo = 'recogida'`,
         [alumno.id]
     );
 
     const punto = await client.query(
         `INSERT INTO puntos_ruta (ruta_id, alumno_id, tipo, latitud, longitud, orden, nombre_parada)
-         VALUES ($1, $2, 'recogida', $3, $4, $5, $6)
+         VALUES ($1::int, $2::int, 'recogida', $3::numeric, $4::numeric, $5::int, $6::text)
          RETURNING *`,
         [rutaId, alumno.id, latitud, longitud, orden, nombreParada]
     );
@@ -74,14 +74,14 @@ const guardarPuntoRutaAlumno = async ({
 
     await client.query(
         `DELETE FROM puntos_ruta
-         WHERE alumno_id = $1
-           AND tipo = $2`,
+         WHERE alumno_id = $1::int
+           AND tipo = $2::text`,
         [alumnoId, tipo]
     );
 
     const punto = await client.query(
         `INSERT INTO puntos_ruta (ruta_id, alumno_id, tipo, latitud, longitud, orden, nombre_parada)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         VALUES ($1::int, $2::int, $3::text, $4::numeric, $5::numeric, $6::int, $7::text)
          RETURNING *`,
         [rutaId, alumnoId, tipo, lat, lng, orden, nombreParada || `Punto ${tipo}`]
     );

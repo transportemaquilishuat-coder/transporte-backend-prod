@@ -178,7 +178,7 @@ router.post('/alerta-bus', async (req, res) => {
         const tokensPush = await pool.query(
             `SELECT tp.token, tp.usuario_id
              FROM tokens_push tp
-             WHERE tp.usuario_id = ANY($1) AND tp.activo = true`,
+             WHERE tp.usuario_id = ANY($1::int[]) AND tp.activo = true`,
             [padresHijos.rows.map((p) => p.padre_id)]
         );
 

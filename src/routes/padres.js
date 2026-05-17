@@ -47,8 +47,8 @@ const crearSolicitudCambioPunto = async (client, {
     const pendiente = await client.query(
         `SELECT id
          FROM solicitudes_cambio_punto_recogida
-         WHERE alumno_id = $1
-           AND tipo = $2
+         WHERE alumno_id = $1::int
+           AND tipo = $2::text
            AND estado = 'pendiente'
          LIMIT 1`,
         [alumno.id, tipo]
@@ -76,7 +76,20 @@ const crearSolicitudCambioPunto = async (client, {
             longitude_nueva,
             motivo
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         VALUES (
+            $1::int, 
+            $2::int, 
+            $3::int, 
+            $4::int, 
+            $5::text, 
+            $6::text, 
+            $7::numeric, 
+            $8::numeric, 
+            $9::text, 
+            $10::numeric, 
+            $11::numeric, 
+            $12::text
+         )
          RETURNING *`,
         [
             alumno.id,
@@ -175,7 +188,7 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
             LEFT JOIN usuarios u ON u.id = r.conductor_id
             LEFT JOIN rutas nr ON nr.id = pr.ruta_id
             LEFT JOIN usuarios nu ON nu.id = nr.conductor_id
-            WHERE ap.padre_id = $1 AND a.activo = true
+            WHERE ap.padre_id = $1::int AND a.activo = true
             ORDER BY a.nombre`,
             [padreId]
         );
@@ -204,7 +217,7 @@ router.put('/hijos/:alumnoId', authenticateToken, requireRole('padre'), async (r
             `SELECT a.parada
              FROM alumnos a
              JOIN alumno_padres ap ON ap.alumno_id = a.id
-             WHERE a.id = $1 AND ap.padre_id = $2 AND a.activo = true`,
+             WHERE a.id = $1::int AND ap.padre_id = $2::int AND a.activo = true`,
             [alumnoId, padreId]
         );
 
@@ -223,14 +236,14 @@ router.put('/hijos/:alumnoId', authenticateToken, requireRole('padre'), async (r
         // 2. Actualizar datos
         const resultado = await pool.query(
             `UPDATE alumnos 
-             SET nombre = COALESCE($1, nombre),
-                 grado = COALESCE($2, grado),
-                 colegio_nombre = COALESCE($3, colegio_nombre),
+             SET nombre = COALESCE($1::text, nombre),
+                 grado = COALESCE($2::text, grado),
+                 colegio_nombre = COALESCE($3::text, colegio_nombre),
                  parada = CASE
-                    WHEN (parada IS NULL OR BTRIM(parada) = '') AND $4 IS NOT NULL THEN $4
+                    WHEN (parada IS NULL OR BTRIM(parada) = '') AND $4::text IS NOT NULL THEN $4::text
                     ELSE parada
                  END
-             WHERE id = $5
+             WHERE id = $5::int
              RETURNING id, nombre, grado, colegio_nombre as "colegioNombre", parada as direccion`,
             [nombre, grado, colegioNombre, direccion, alumnoId]
         );
@@ -317,8 +330,8 @@ router.post('/hijos/:alumnoId/solicitud-cambio-punto-recogida', authenticateToke
              JOIN alumno_padres ap ON ap.alumno_id = a.id
              LEFT JOIN rutas r ON r.id = a.ruta_id
              LEFT JOIN usuarios u ON u.id = r.conductor_id
-             WHERE a.id = $1
-               AND ap.padre_id = $2
+             WHERE a.id = $1::int
+               AND ap.padre_id = $2::int
                AND a.activo = true`,
             [alumnoId, padreId]
         );
@@ -436,7 +449,7 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
              FROM alumnos a
              JOIN alumno_padres ap ON ap.alumno_id = a.id
              LEFT JOIN rutas r ON r.id = a.ruta_id
-             WHERE a.id = $1 AND ap.padre_id = $2 AND a.activo = true`,
+             WHERE a.id = $1::int AND ap.padre_id = $2::int AND a.activo = true`,
             [alumnoId, padreId]
         );
 
@@ -452,7 +465,7 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
                 `SELECT a.id AS alumno_id
                  FROM alumnos a
                  JOIN alumno_padres ap ON ap.alumno_id = a.id
-                 WHERE ap.padre_id = $1 AND a.activo = true`,
+                 WHERE ap.padre_id = $1::int AND a.activo = true`,
                 [padreId]
             );
             idsAActualizar = otrosHijos.rows.map(h => h.alumno_id);
@@ -641,12 +654,12 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
             await client.query(
                 `UPDATE alumnos 
                  SET parada = CASE
-                        WHEN $1 IS NOT NULL THEN $1
-                        WHEN parada IS NULL OR BTRIM(parada) = '' THEN $2
+                        WHEN $1::text IS NOT NULL THEN $1::text
+                        WHEN parada IS NULL OR BTRIM(parada) = '' THEN $2::text
                         ELSE parada
                      END,
-                     latitude = COALESCE(latitude, $3),
-                     longitude = COALESCE(longitude, $4)
+                     latitude = COALESCE(latitude, $3::numeric),
+                     longitude = COALESCE(longitude, $4::numeric)
                  WHERE id = ANY($5::int[])`,
                 [paradaSolicitada, paradaGenerada, latSolicitada, lngSolicitada, aActualizarDirecto]
             );
@@ -804,7 +817,7 @@ router.get('/:padreId/historial', async (req, res) => {
                  JOIN alumno_padres ap ON ap.alumno_id = a.id
                  INNER JOIN rutas r ON r.id = a.ruta_id
                  INNER JOIN colegios c ON c.id = r.colegio_id
-                 WHERE ap.padre_id = $1
+                 WHERE ap.padre_id = $1::int
                    AND a.activo = true
                  ORDER BY c.id
                  LIMIT 1`,
