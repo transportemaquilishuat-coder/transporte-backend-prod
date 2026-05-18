@@ -104,6 +104,7 @@ const alumnosPorConductor = async (req, res) => {
                 COALESCE(pr.latitude, a.latitude) AS latitude,
                 COALESCE(pr.longitude, a.longitude) AS longitude,
                 a.orden,
+                -- 1. Estado de abordaje (hoy)
                 CASE
                     WHEN EXISTS (
                         SELECT 1
@@ -114,34 +115,40 @@ const alumnosPorConductor = async (req, res) => {
                     ) THEN 'abordado'
                     ELSE 'pendiente'
                 END AS estado,
-                EXISTS (
-                    SELECT 1
+                -- 2. InformaciÃ³n de Ausencia (Hoy)
+                COALESCE((
+                    SELECT JSONB_BUILD_OBJECT(
+                        'esAusente', (au.estado = 'autorizado'),
+                        'pendienteAutorizacion', (au.estado = 'pendiente'),
+                        'motivo', au.motivo
+                    )
                     FROM ausencias au
                     WHERE au.alumno_id = a.id
                       AND CURRENT_DATE BETWEEN au.fecha AND COALESCE(au.fecha_fin, au.fecha)
-                ) AS ausente,
+                    LIMIT 1
+                ), '{"esAusente": false, "pendienteAutorizacion": false}'::jsonb) as "infoAusencia",
+                -- 3. Detalles de ProgramaciÃ³n Temporal (Hoy)
                 pr.nota as "notaProgramacion",
                 (pr.id IS NOT NULL) as "esCambioTemporal",
-                pr.tipo as "turnoProgramado"
+                pr.tipo as "turnoProgramado",
+                pr.estado as "estadoCambioTemporal",
+                -- 4. Datos del Padre para contacto rÃ¡pido
+                u_padre.nombre as "padreNombre",
+                u_padre.telefono as "padreTelefono"
              FROM alumnos a
+             LEFT JOIN usuarios u_padre ON u_padre.id = a.padre_id
              LEFT JOIN LATERAL (
                 SELECT * FROM programacion_rutas 
                 WHERE alumno_id = a.id AND fecha = CURRENT_DATE
-                AND estado = 'aprobado'
                 AND ($2::text IS NULL OR tipo = $2 OR tipo = 'ambos')
-                ORDER BY CASE WHEN tipo = 'ambos' THEN 2 ELSE 1 END
+                -- Nota: El conductor ve cambios aprobados Y pendientes para estar alerta
+                ORDER BY CASE WHEN estado = 'aprobado' THEN 1 ELSE 2 END
                 LIMIT 1
              ) pr ON true
              WHERE a.activo = true
-               AND NOT EXISTS (
-                 SELECT 1 FROM ausencias au 
-                 WHERE au.alumno_id = a.id 
-                   AND au.estado = 'autorizado'
-                   AND CURRENT_DATE BETWEEN au.fecha AND COALESCE(au.fecha_fin, au.fecha)
-               )
                AND (
                  (pr.id IS NULL AND a.ruta_id = ANY($1::int[])) OR
-                 (pr.id IS NOT NULL AND pr.ruta_id = ANY($1::int[]))
+                 (pr.id IS NOT NULL AND (pr.ruta_id = ANY($1::int[]) OR a.ruta_id = ANY($1::int[])))
                )
                AND ($2::text IS NULL OR a.turno_estudio = $2)
             ORDER BY a.orden, a.nombre`,
