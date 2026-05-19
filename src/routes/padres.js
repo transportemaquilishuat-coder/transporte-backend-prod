@@ -146,6 +146,7 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
                 a.id, 
                 a.nombre, 
                 a.grado, 
+                a.turno_estudio,
                 COALESCE(a.colegio_nombre, c_fix.nombre) as "colegioNombre",
                 COALESCE(pr.parada, a.parada) as parada, 
                 COALESCE(pr.latitude, a.latitude) as latitude, 
@@ -165,7 +166,13 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
                     AND DATE(er.creado_en) = CURRENT_DATE
                 ) as abordado,
                 (pr.id IS NOT NULL) as "tieneProgramacionHoy",
-                -- Promedios semanales (HH:MM) - Usamos intervalos para promediar tiempos en Postgres
+                EXISTS (
+                    SELECT 1 FROM ausencias au
+                    WHERE au.alumno_id = a.id 
+                      AND au.estado = 'autorizado'
+                      AND CURRENT_DATE BETWEEN au.fecha AND COALESCE(au.fecha_fin, au.fecha)
+                ) as ausente,
+                -- Promedios semanales (HH:MM)
                 (SELECT TO_CHAR(AVG(creado_en::time - '00:00:00'::time), 'HH24:MI') 
                  FROM eventos_ruta 
                  WHERE tipo = 'abordado' AND descripcion = CONCAT('alumnoId:', a.id)
@@ -179,6 +186,7 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
             LEFT JOIN LATERAL (
                 SELECT * FROM programacion_rutas 
                 WHERE alumno_id = a.id AND fecha = CURRENT_DATE
+                AND estado = 'aprobado'
                 ORDER BY CASE WHEN tipo = 'ambos' THEN 1 ELSE 2 END
                 LIMIT 1
             ) pr ON true
@@ -197,6 +205,59 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
     } catch (error) {
         console.error('Error obteniendo hijos:', error);
         res.status(500).json({ error: 'Error interno del servidor' });
+    }
+});
+
+const { reportarAusencia } = require('../controllers/asignacionesController');
+
+// POST /api/padres/hijos/:alumnoId/ausencia
+router.post('/hijos/:alumnoId/ausencia', authenticateToken, requireRole('padre'), async (req, res) => {
+    req.body.alumnoId = req.params.alumnoId;
+    return reportarAusencia(req, res);
+});
+
+// POST /api/padres/hijos/:alumnoId/programacion
+router.post('/hijos/:alumnoId/programacion', authenticateToken, requireRole('padre'), async (req, res) => {
+    const { fecha_inicio, fecha_fin, ruta_id, parada, latitude, longitude, tipo, nota } = req.body;
+    const alumnoId = Number(req.params.alumnoId);
+
+    try {
+        const vinculacion = await pool.query(
+            'SELECT 1 FROM alumno_padres WHERE alumno_id = $1 AND padre_id = $2',
+            [alumnoId, req.user.id]
+        );
+        if (vinculacion.rows.length === 0) return res.status(403).json({ error: 'No autorizado' });
+
+        const fInicio = new Date(fecha_inicio);
+        const fFin = new Date(fecha_fin || fecha_inicio);
+        const resultados = [];
+
+        // Generar una entrada para cada día en el rango
+        for (let d = new Date(fInicio); d <= fFin; d.setDate(d.getDate() + 1)) {
+            const fechaStr = d.toISOString().split('T')[0];
+            const resInsert = await pool.query(
+                `INSERT INTO programacion_rutas 
+                    (alumno_id, fecha, ruta_id, parada, latitude, longitude, tipo, nota, creado_por, estado)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pendiente')
+                 ON CONFLICT (alumno_id, fecha, tipo) 
+                 DO UPDATE SET 
+                    ruta_id = EXCLUDED.ruta_id,
+                    parada = EXCLUDED.parada,
+                    latitude = EXCLUDED.latitude,
+                    longitude = EXCLUDED.longitude,
+                    nota = EXCLUDED.nota,
+                    estado = 'pendiente',
+                    creado_en = NOW()
+                 RETURNING *`,
+                [alumnoId, fechaStr, ruta_id || null, parada || null, latitude || null, longitude || null, tipo || 'ambos', nota || null, req.user.id]
+            );
+            resultados.push(resInsert.rows[0]);
+        }
+
+        res.status(201).json({ mensaje: 'Programaciones creadas', programaciones: resultados });
+    } catch (error) {
+        console.error('Error programacion multiple:', error);
+        res.status(500).json({ error: 'Error interno' });
     }
 });
 
