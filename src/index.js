@@ -282,24 +282,31 @@ io.on('connection', (socket) => {
             });
         }
     });
+// 🟢 Inicio de ruta
+socket.on('conductor:inicio_ruta', async (datos) => {
+    const { rutaId, sentido = 'recogida', turno = 'matutino' } = datos;
 
-    // 🟢 Inicio de ruta
-    socket.on('conductor:inicio_ruta', async (datos) => {
-        ubicacionBus.activo = true;
-        ubicacionBus.rutaId = datos.rutaId || ubicacionBus.rutaId || null;
-        ubicacionBus.sentido = datos.sentido || ubicacionBus.sentido || null;
+    ubicacionBus.activo = true;
+    ubicacionBus.rutaId = rutaId || ubicacionBus.rutaId || null;
+    ubicacionBus.sentido = sentido || ubicacionBus.sentido || null;
+    ubicacionBus.turno = turno;
 
-        if (datos.rutaId) {
-            // Sincronizar puntos de la ruta al iniciar para asegurar que estÃ©n actualizados
-            await sincronizarPuntosRuta(datos.rutaId).catch(e => console.error('Error sincronizando ruta al inicio:', e));
+    if (rutaId) {
+        // Sincronizar ruta INTELIGENTE al iniciar
+        // Filtra ausentes y aplica cambios temporales aprobados
+        await sincronizarPuntosRuta(rutaId, pool, { turno, sentido })
+            .catch(e => console.error('Error sincronizando ruta inteligente:', e));
 
-            io.to(`ruta:${datos.rutaId}`).emit('bus:inicio_ruta', datos);
-            pool.query(
-                `INSERT INTO eventos_ruta (ruta_id, conductor_id, tipo, descripcion)
-                 VALUES ($1, $2, 'inicio_ruta', $3)`,
-                [
-                    datos.rutaId,
-                    datos.conductorId || null,
+        io.to(`ruta:${rutaId}`).emit('bus:inicio_ruta', { ...datos, sentido, turno });
+
+        pool.query(
+            `INSERT INTO eventos_ruta (ruta_id, conductor_id, tipo, descripcion)
+             VALUES ($1, $2, 'inicio_ruta', $3)`,
+            [rutaId, datos.conductorId || null, `Turno: ${turno}, Sentido: ${sentido}`]
+        ).catch(e => console.error('Error guardando evento inicio:', e.message));
+    }
+});
+
                     datos.sentido === 'colegio_a_casa'
                         ? 'Ruta de devolucion iniciada'
                         : 'Ruta de recogida iniciada',
