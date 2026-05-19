@@ -208,18 +208,14 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
     }
 });
 
-const { reportarAusencia } = require('../controllers/asignacionesController');
+const handleProgramacionRequest = async (req, res) => {
+    const { fecha_inicio, fecha_fin, ruta_id, parada, latitude, longitude, tipo, nota, fecha } = req.body;
+    const alumnoId = Number(req.params.alumnoId || req.params.id);
+    
+    const fStartStr = fecha_inicio || fecha;
+    const fEndStr = fecha_fin || fStartStr;
 
-// POST /api/padres/hijos/:alumnoId/ausencia
-router.post('/hijos/:alumnoId/ausencia', authenticateToken, requireRole('padre'), async (req, res) => {
-    req.body.alumnoId = req.params.alumnoId;
-    return reportarAusencia(req, res);
-});
-
-// POST /api/padres/hijos/:alumnoId/programacion
-router.post('/hijos/:alumnoId/programacion', authenticateToken, requireRole('padre'), async (req, res) => {
-    const { fecha_inicio, fecha_fin, ruta_id, parada, latitude, longitude, tipo, nota } = req.body;
-    const alumnoId = Number(req.params.alumnoId);
+    if (!fStartStr) return res.status(400).json({ error: 'Fecha es requerida' });
 
     try {
         const vinculacion = await pool.query(
@@ -228,11 +224,10 @@ router.post('/hijos/:alumnoId/programacion', authenticateToken, requireRole('pad
         );
         if (vinculacion.rows.length === 0) return res.status(403).json({ error: 'No autorizado' });
 
-        const fInicio = new Date(fecha_inicio);
-        const fFin = new Date(fecha_fin || fecha_inicio);
+        const fInicio = new Date(fStartStr);
+        const fFin = new Date(fEndStr);
         const resultados = [];
 
-        // Generar una entrada para cada día en el rango
         for (let d = new Date(fInicio); d <= fFin; d.setDate(d.getDate() + 1)) {
             const fechaStr = d.toISOString().split('T')[0];
             const resInsert = await pool.query(
@@ -256,10 +251,21 @@ router.post('/hijos/:alumnoId/programacion', authenticateToken, requireRole('pad
 
         res.status(201).json({ mensaje: 'Programaciones creadas', programaciones: resultados });
     } catch (error) {
-        console.error('Error programacion multiple:', error);
+        console.error('Error programacion:', error);
         res.status(500).json({ error: 'Error interno' });
     }
+};
+
+// POST /api/padres/hijos/:alumnoId/programacion
+router.post('/hijos/:alumnoId/programacion', authenticateToken, requireRole('padre'), handleProgramacionRequest);
+router.post('/hijos/:alumnoId/programar-cambio', authenticateToken, requireRole('padre'), handleProgramacionRequest);
+
+// Alias con :id para compatibilidad absoluta con instrucciones de frontend
+router.post('/hijos/:id/reportar-ausencia', authenticateToken, requireRole('padre'), async (req, res) => {
+    req.body.alumnoId = req.params.id;
+    return reportarAusencia(req, res);
 });
+router.post('/hijos/:id/programar-cambio', authenticateToken, requireRole('padre'), handleProgramacionRequest);
 
 // PUT /api/padres/hijos/:alumnoId
 // Permite al padre editar la información básica de su hijo
@@ -506,10 +512,11 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
         // 1. Verificar que el alumno pertenece al padre
         const actual = await client.query(
             `SELECT a.id, a.nombre, a.ruta_id, a.parada, a.latitude, a.longitude,
-                    r.conductor_id
+                    r.conductor_id, u.nombre AS conductor_nombre
              FROM alumnos a
              JOIN alumno_padres ap ON ap.alumno_id = a.id
              LEFT JOIN rutas r ON r.id = a.ruta_id
+             LEFT JOIN usuarios u ON u.id = r.conductor_id
              WHERE a.id = $1::int AND ap.padre_id = $2::int AND a.activo = true`,
             [alumnoId, padreId]
         );
@@ -518,6 +525,8 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
             await client.query('ROLLBACK');
             return res.status(404).json({ error: 'Alumno no encontrado para este padre' });
         }
+
+        const conductorNombre = actual.rows[0].conductor_nombre || 'el conductor';
 
         // 2. Identificar qué alumnos actualizar
         let idsAActualizar = [alumnoId];
@@ -535,9 +544,10 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
         const alumnosAActualizar = aplicarATodos
             ? await client.query(
                 `SELECT a.id, a.nombre, a.ruta_id, a.parada, a.latitude, a.longitude,
-                        r.conductor_id
+                        r.conductor_id, u.nombre AS conductor_nombre
                  FROM alumnos a
                  LEFT JOIN rutas r ON r.id = a.ruta_id
+                 LEFT JOIN usuarios u ON u.id = r.conductor_id
                  WHERE a.id = ANY($1::int[])`,
                 [idsAActualizar]
             )
@@ -646,16 +656,19 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
                     solicitudes: solicitudesEntrega,
                     puntos: puntosGuardados,
                     idsActualizados: directos.map((alumno) => alumno.id),
+                    conductorNombre
                 });
-            }
+                }
 
-            return res.json({
+                return res.json({
                 mensaje: aplicarATodos
                     ? 'Punto de entrega actualizado para todos los hijos'
                     : 'Punto de entrega definido correctamente',
                 puntos: puntosGuardados,
                 idsActualizados: directos.map((alumno) => alumno.id),
-            });
+                conductorNombre
+                });
+
         }
 
         const aActualizarDirecto = [];
@@ -764,7 +777,8 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
                     : 'Solicitud de cambio de punto enviada al conductor',
                 codigo: 'CAMBIO_PUNTO_RECOGIDA_PENDIENTE_APROBACION',
                 solicitudes: solicitudesCreadas,
-                idsActualizados: aActualizarDirecto
+                idsActualizados: aActualizarDirecto,
+                conductorNombre
             });
         }
 
@@ -772,7 +786,8 @@ router.put('/hijos/:alumnoId/punto-recogida', authenticateToken, requireRole('pa
             mensaje: aplicarATodos 
                 ? 'Punto de recogida actualizado para todos los hijos' 
                 : 'Punto de recogida definido correctamente',
-            idsActualizados: aActualizarDirecto
+            idsActualizados: aActualizarDirecto,
+            conductorNombre
         });
 
     } catch (error) {
