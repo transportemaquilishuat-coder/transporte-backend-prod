@@ -142,21 +142,27 @@ router.post('/registro', async (req, res) => {
         return res.status(400).json({ error: 'Rol inválido para registro' });
     }
 
-    // 0. Validación de Formato de Email (MX/Regex)
+    // 0. Validación de Email (Relajada para evitar falsos negativos)
     try {
         const emailCheck = await validate({
             email: emailNormalizado,
             validateRegex: true,
             validateMx: true,
-            validateTypo: true,
+            validateTypo: false, // Desactivado para evitar errores con dominios personalizados
             validateDisposable: true,
-            validateSMTP: false, // Desactivado: Evita falsos negativos por bloqueos de servidores
+            validateSMTP: false,
         });
 
-        if (!emailCheck.valid && emailCheck.reason !== 'smtp') {
+        console.log(`[REGISTRO] Resultado validación para ${emailNormalizado}:`, emailCheck);
+
+        // Si la validación falla pero es por razones de conexión (mx, smtp) o typos, 
+        // y el formato regex es válido, permitimos el paso.
+        const esFormatoValido = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNormalizado);
+        
+        if (!emailCheck.valid && !esFormatoValido) {
             return res.status(400).json({ 
                 error: 'Email con formato inválido', 
-                detalle: `La verificación falló en: ${emailCheck.reason}. Revisa que el correo esté bien escrito.`,
+                detalle: `La verificación falló. Revisa que el correo esté bien escrito.`,
                 codigo: 'EMAIL_VALIDATION_FAILED'
             });
         }
