@@ -850,6 +850,112 @@ router.post('/hijos/:alumnoId/generar-invitacion', authenticateToken, requireRol
     }
 });
 
+// POST /api/padres/hijos/:alumnoId/compartir-por-telefono
+// Nueva forma de compartir seguimiento directamente por número de teléfono
+router.post('/hijos/:alumnoId/compartir-por-telefono', authenticateToken, requireRole('padre'), async (req, res) => {
+    const { alumnoId } = req.params;
+    const { telefono } = req.body;
+
+    if (!telefono) {
+        return res.status(400).json({ error: 'El número de teléfono es requerido' });
+    }
+
+    // Normalizar teléfono: solo dígitos y tomar los últimos 8 (estándar SV)
+    const telLimpio = String(telefono).replace(/[^\d]/g, '');
+    const telNormalizado = telLimpio.length > 8 ? telLimpio.slice(-8) : telLimpio;
+
+    if (telNormalizado.length < 8) {
+        return res.status(400).json({ error: 'El número de teléfono no es válido' });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 1. Verificar que el emisor tiene permiso sobre el alumno y obtener el colegio_id
+        const checkEmisor = await client.query(
+            `SELECT a.colegio_id, a.nombre as alumno_nombre
+             FROM alumnos a
+             JOIN alumno_padres ap ON ap.alumno_id = a.id
+             WHERE a.id = $1 AND ap.padre_id = $2`,
+            [alumnoId, req.user.id]
+        );
+
+        if (checkEmisor.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ error: 'No tienes permiso para compartir el seguimiento de este alumno' });
+        }
+
+        const { colegio_id, alumno_nombre } = checkEmisor.rows[0];
+
+        // 2. Buscar al invitado por teléfono
+        // Buscamos usuarios cuyo teléfono termine en el número normalizado (para mayor flexibilidad)
+        const checkInvitado = await client.query(
+            `SELECT id, nombre, colegio_id 
+             FROM usuarios 
+             WHERE (telefono LIKE $1 OR telefono = $2) AND rol = 'padre'
+             LIMIT 1`,
+            [`%${telNormalizado}`, telNormalizado]
+        );
+
+        if (checkInvitado.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ 
+                error: 'Usuario no encontrado', 
+                mensaje: 'El invitado debe estar registrado en la aplicación como padre para recibir el seguimiento.' 
+            });
+        }
+
+        const invitado = checkInvitado.rows[0];
+
+        if (invitado.id === req.user.id) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'No puedes compartir el seguimiento contigo mismo' });
+        }
+
+        // 3. Vincular al invitado con el alumno
+        await client.query(
+            `INSERT INTO alumno_padres (alumno_id, padre_id, rol)
+             VALUES ($1, $2, 'compartido')
+             ON CONFLICT (alumno_id, padre_id) DO NOTHING`,
+            [alumnoId, invitado.id]
+        );
+
+        // 4. Opcional: Asegurar que el invitado esté en el mismo colegio si no tiene uno
+        if (colegio_id && !invitado.colegio_id) {
+            await client.query(
+                'UPDATE usuarios SET colegio_id = $1 WHERE id = $2',
+                [colegio_id, invitado.id]
+            );
+        }
+
+        await client.query('COMMIT');
+
+        // Enviar notificación al invitado (opcional pero recomendado)
+        enviarNotificacionPush(
+            invitado.id,
+            'Nuevo seguimiento compartido',
+            `Ahora puedes seguir el transporte de ${alumno_nombre}.`,
+            { tipo: 'seguimiento_compartido', alumnoId }
+        ).catch(err => console.error('Error enviando notificación de compartido:', err));
+
+        res.json({
+            mensaje: `Seguimiento de ${alumno_nombre} compartido con ${invitado.nombre} correctamente.`,
+            invitado: {
+                id: invitado.id,
+                nombre: invitado.nombre
+            }
+        });
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error compartiendo por teléfono:', error);
+        res.status(500).json({ error: 'Error interno del servidor' });
+    } finally {
+        client.release();
+    }
+});
+
 router.get('/:padreId/historial', async (req, res) => {
     const padreId = Number(req.params.padreId);
 
