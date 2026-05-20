@@ -142,7 +142,7 @@ router.post('/registro', async (req, res) => {
         return res.status(400).json({ error: 'Rol inválido para registro' });
     }
 
-    // 0. Validación Profunda de Email (SMTP/MX/Disposable)
+    // 0. Validación de Formato de Email (MX/Regex)
     try {
         const emailCheck = await validate({
             email: emailNormalizado,
@@ -150,18 +150,18 @@ router.post('/registro', async (req, res) => {
             validateMx: true,
             validateTypo: true,
             validateDisposable: true,
-            validateSMTP: true,
+            validateSMTP: false, // Desactivado: Evita falsos negativos por bloqueos de servidores
         });
 
-        if (!emailCheck.valid) {
+        if (!emailCheck.valid && emailCheck.reason !== 'smtp') {
             return res.status(400).json({ 
-                error: 'Email inválido o inexistente', 
-                detalle: `La verificación falló en: ${emailCheck.reason}. Asegúrese de que el buzón de correo exista realmente.`,
+                error: 'Email con formato inválido', 
+                detalle: `La verificación falló en: ${emailCheck.reason}. Revisa que el correo esté bien escrito.`,
                 codigo: 'EMAIL_VALIDATION_FAILED'
             });
         }
     } catch (err) {
-        console.warn('[REGISTRO] Error en validación profunda de email (procediendo de todos modos):', err.message);
+        console.warn('[REGISTRO] Error en validación de email (procediendo):', err.message);
     }
 
     try {
