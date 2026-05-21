@@ -305,16 +305,8 @@ socket.on('conductor:inicio_ruta', async (datos) => {
             [rutaId, datos.conductorId || null, `Turno: ${turno}, Sentido: ${sentido}`]
         ).catch(e => console.error('Error guardando evento inicio:', e.message));
     }
+    console.log(`🟢 Ruta iniciada por conductor ${datos.conductorId}`);
 });
-
-                    datos.sentido === 'colegio_a_casa'
-                        ? 'Ruta de devolucion iniciada'
-                        : 'Ruta de recogida iniciada',
-                ]
-            ).catch(e => console.log('Error registrando inicio de ruta:', e.message));
-        }
-        console.log(`🟢 Ruta iniciada por conductor ${datos.conductorId}`);
-    });
 
     // 🔴 Fin de ruta
     socket.on('conductor:fin_ruta', (datos) => {
