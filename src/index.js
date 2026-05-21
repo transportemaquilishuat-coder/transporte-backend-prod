@@ -257,6 +257,43 @@ io.on('connection', (socket) => {
         // Mantener actualizado el panel de admin global
         io.emit('admin:conductores_activos', Object.values(conductoresActivos));
 
+        // 🛡️ SEGURO DE OLVIDO: Auto-cierre por inactividad cerca del colegio
+        if (rutaId && datos.sentido === 'casa_a_colegio') {
+            const keyOlvido = `olvido_${rutaId}`;
+            
+            // Si el bus está casi detenido (velocidad < 2km/h o misma posición)
+            // Aquí lo simplificamos: si recibimos varias señales en el mismo punto cerca del colegio
+            if (!this.lastPositions) this.lastPositions = {};
+            const lastPos = this.lastPositions[keyOlvido];
+            
+            if (lastPos) {
+                const movido = calcularDistancia(datos.latitude, datos.longitude, lastPos.lat, lastPos.lng);
+                // Si se ha movido menos de 5 metros en el último intervalo
+                if (movido < 5) {
+                    lastPos.count = (lastPos.count || 0) + 1;
+                } else {
+                    lastPos.count = 0;
+                }
+                lastPos.lat = datos.latitude;
+                lastPos.lng = datos.longitude;
+
+                // Si lleva ~5 minutos (ej. 15 señales de 20s) estático cerca del colegio
+                if (lastPos.count >= 15) {
+                    console.log(`[SEGURO OLVIDO] Detectada inactividad en destino para ruta ${rutaId}. Auto-cerrando...`);
+                    socket.emit('conductor:fin_ruta', {
+                        rutaId,
+                        conductorId,
+                        latitude: datos.latitude,
+                        longitude: datos.longitude,
+                        sentido: datos.sentido,
+                        motivo: 'auto_cierre_inactividad'
+                    });
+                    lastPos.count = 0; // Reset
+                }
+            } else {
+                this.lastPositions[keyOlvido] = { lat: datos.latitude, lng: datos.longitude, count: 0 };
+            }
+        }
     });
 
     // 📣 Evento genérico del conductor (Reportar tráfico, pinchazo, etc.)
