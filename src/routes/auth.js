@@ -162,6 +162,26 @@ router.post('/registro', async (req, res) => {
         });
     }
 
+    // Limpieza de fechas para evitar errores de base de datos (Ej: "21 05" -> null)
+    const limpiarFecha = (fechaStr) => {
+        if (!fechaStr || typeof fechaStr !== 'string') return null;
+        // Si el formato es "DD MM" (como envía el frontend a veces), intentamos convertirlo a "YYYY-MM-DD"
+        // Asumimos el año actual si no viene especificado
+        const partes = fechaStr.split(/[\/\-\s]/);
+        if (partes.length === 2) {
+            const dia = partes[0].padStart(2, '0');
+            const mes = partes[1].padStart(2, '0');
+            const anio = new Date().getFullYear();
+            return `${anio}-${mes}-${dia}`;
+        }
+        // Validar si es una fecha válida para PG
+        const d = new Date(fechaStr);
+        return isNaN(d.getTime()) ? null : fechaStr;
+    };
+
+    const fechaInicioLimpia = limpiarFecha(fechaInicio);
+    const fechaFinLimpia = limpiarFecha(fechaFin);
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -207,7 +227,7 @@ router.post('/registro', async (req, res) => {
             `INSERT INTO usuarios (nombre, email, password, rol, telefono, dui, licencia, placa, colegio_id, fecha_inicio_servicio, fecha_fin_servicio)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              RETURNING id, nombre, email, rol, telefono, colegio_id`,
-            [nombre, emailNormalizado, passwordHash, rol, telefono, dui, licencia, placa, colegioId, fechaInicio || null, fechaFin || null]
+            [nombre, emailNormalizado, passwordHash, rol, telefono, dui, licencia, placa, colegioId, fechaInicioLimpia, fechaFinLimpia]
         );
         const usuario = resultadoUsuario.rows[0];
 
