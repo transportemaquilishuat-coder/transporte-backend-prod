@@ -363,7 +363,7 @@ socket.on('conductor:inicio_ruta', async (datos) => {
             
             if (datos.sentido === 'casa_a_colegio') {
                 pool.query(
-                    `SELECT c.id, c.nombre, c.latitude, c.longitude 
+                    `SELECT c.id, c.nombre, c.latitude, c.longitude, c.geo_origen 
                      FROM rutas r JOIN colegios c ON c.id = r.colegio_id 
                      WHERE r.id = $1`,
                     [datos.rutaId]
@@ -371,10 +371,10 @@ socket.on('conductor:inicio_ruta', async (datos) => {
                     if (resColegio.rows.length > 0) {
                         const colegio = resColegio.rows[0];
                         
-                        // A. CAPTURA AUTOMÁTICA: Si el colegio no tiene coordenadas, las tomamos del bus ahora
-                        if (!colegio.latitude || !colegio.longitude) {
+                        // A. CAPTURA AUTOMÁTICA: Solo si NO ha sido verificada manualmente por un Admin
+                        if (colegio.geo_origen !== 'manual' && (!colegio.latitude || !colegio.longitude)) {
                             pool.query(
-                                'UPDATE colegios SET latitude = $1, longitude = $2 WHERE id = $3',
+                                'UPDATE colegios SET latitude = $1, longitude = $2, geo_origen = \'auto\' WHERE id = $3',
                                 [datos.latitude || ubicacionBus.latitude, datos.longitude || ubicacionBus.longitude, colegio.id]
                             ).then(() => {
                                 console.log(`[AUTO-GEO] Coordenadas capturadas para el colegio: ${colegio.nombre}`);
