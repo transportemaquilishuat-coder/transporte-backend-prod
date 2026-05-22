@@ -198,6 +198,67 @@ router.get('/colegios/:colegioId/usuarios', async (req, res) => {
     }
 });
 
+router.get('/conductores-independientes', async (req, res) => {
+    try {
+        const resultado = await pool.query(
+            `WITH rutas_activas AS (
+                SELECT id, nombre, conductor_id, colegio_id, activa, creado_en
+                FROM rutas
+                WHERE activa = true
+            ),
+            alumnos_por_conductor AS (
+                SELECT r.conductor_id, COUNT(a.id)::int AS total_alumnos
+                FROM rutas r
+                LEFT JOIN alumnos a ON a.ruta_id = r.id AND a.activo = true
+                WHERE r.activa = true
+                GROUP BY r.conductor_id
+            )
+            SELECT
+                u.id,
+                u.nombre,
+                u.email,
+                u.telefono,
+                u.dui,
+                u.licencia,
+                u.placa,
+                u.activo,
+                u.creado_en,
+                COALESCE(ap.total_alumnos, 0) AS total_alumnos,
+                COALESCE(
+                    JSONB_AGG(
+                        JSONB_BUILD_OBJECT(
+                            'id', r.id,
+                            'nombre', r.nombre,
+                            'colegioId', r.colegio_id,
+                            'activa', r.activa,
+                            'creadoEn', r.creado_en
+                        )
+                        ORDER BY r.creado_en DESC
+                    ) FILTER (WHERE r.id IS NOT NULL),
+                    '[]'::jsonb
+                ) AS rutas
+            FROM usuarios u
+            LEFT JOIN rutas_activas r ON r.conductor_id = u.id
+            LEFT JOIN alumnos_por_conductor ap ON ap.conductor_id = u.id
+            WHERE u.rol = 'conductor'
+              AND u.colegio_id IS NULL
+            GROUP BY u.id, ap.total_alumnos
+            ORDER BY u.activo DESC, u.nombre`
+        );
+
+        const conductores = resultado.rows;
+        res.json({
+            conductores,
+            total: conductores.length,
+            activos: conductores.filter((conductor) => conductor.activo).length,
+            inactivos: conductores.filter((conductor) => !conductor.activo).length,
+        });
+    } catch (error) {
+        console.error('Error listando conductores independientes:', error.message);
+        res.status(500).json({ error: 'Error obteniendo conductores independientes' });
+    }
+});
+
 router.post('/colegios/:colegioId/reset-admin-password', async (req, res) => {
     const { colegioId } = req.params;
     const nuevaPassword = String(req.body?.password || '').trim() || generarPasswordTemporal();
