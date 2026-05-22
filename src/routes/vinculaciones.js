@@ -153,15 +153,6 @@ router.post('/registro-con-codigo', (req, res) => {
 
 const tieneTexto = (valor) => valor !== null && valor !== undefined && String(valor).trim() !== '';
 
-const mapearTurnoEstudio = (turnoRaw = 'matutino') => {
-    const turno = String(turnoRaw || 'matutino').trim().toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '');
-    if (turno === 'manana') return 'matutino';
-    if (turno === 'tarde') return 'vespertino';
-    return turno || 'matutino';
-};
-
 const obtenerDatosAlumnoPayload = (body) => {
     const hijo = body.hijo || {};
     const alumno = body.alumno || {};
