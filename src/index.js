@@ -328,7 +328,7 @@ io.on('connection', (socket) => {
     });
 // 🟢 Inicio de ruta
 socket.on('conductor:inicio_ruta', async (datos) => {
-    const { rutaId, sentido = 'recogida', turno = 'matutino' } = datos;
+    const { rutaId, sentido = 'recogida', turno = 'matutino', latitude, longitude } = datos;
 
     ubicacionBus.activo = true;
     ubicacionBus.rutaId = rutaId || ubicacionBus.rutaId || null;
@@ -337,8 +337,13 @@ socket.on('conductor:inicio_ruta', async (datos) => {
 
     if (rutaId) {
         // Sincronizar ruta INTELIGENTE al iniciar
-        // Filtra ausentes y aplica cambios temporales aprobados
-        await sincronizarPuntosRuta(rutaId, pool, { turno, sentido })
+        // Ahora pasamos la ubicación inicial del conductor para el ordenamiento
+        await sincronizarPuntosRuta(rutaId, pool, { 
+            turno, 
+            sentido,
+            conductorLat: latitude,
+            conductorLng: longitude
+        })
             .catch(e => console.error('Error sincronizando ruta inteligente:', e));
 
         io.to(`ruta:${rutaId}`).emit('bus:inicio_ruta', { ...datos, sentido, turno });

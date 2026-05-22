@@ -313,7 +313,7 @@ const sincronizarPuntosRuta = async (rutaId, client = pool, opciones = {}) => {
     }
 
     // 3. Construir lista de paradas "Vivas"
-    let paradas = alumnosRutaActual.map(alumno => {
+    let paradasBase = alumnosRutaActual.map(alumno => {
         const cambio = cambiosMap.get(Number(alumno.id));
         
         // Si hay un cambio aprobado que aplique a este sentido o sea 'ambos'
@@ -336,7 +336,7 @@ const sincronizarPuntosRuta = async (rutaId, client = pool, opciones = {}) => {
                     nombre: alumno.nombre,
                     parada: entrega.nombre_parada || alumno.parada,
                     lat: normalizarNumero(entrega.latitud),
-                    lng: normalizarNumero(entrega.longitud),
+                    lng: normalizarNumero(longitud),
                     orden: entrega.orden || alumno.orden || 1000
                 };
             }
@@ -353,27 +353,27 @@ const sincronizarPuntosRuta = async (rutaId, client = pool, opciones = {}) => {
     });
 
     // Filtrar paradas sin GPS
-    paradas = paradas.filter(p => p.lat !== null && p.lng !== null);
+    paradasBase = paradasBase.filter(p => p.lat !== null && p.lng !== null);
 
-    // 4. Ordenar y aplicar lógica de Recogida vs Entrega
+    // ==========================================
+    // 🧠 ALGORITMO DE RUTA INTELIGENTE (PROXIMIDAD)
+    // ==========================================
+    let paradasOrdenadas = [];
+    let puntoReferencia = null;
+
     if (sentido === 'recogida') {
-        // Orden normal -> El Colegio es el DESTINO FINAL
-        paradas.sort((a, b) => a.orden - b.orden);
-        if (colegio.lat && colegio.lng) {
-            paradas.push({
-                alumno_id: null,
-                nombre: 'Llegada: ' + colegio.nombre,
-                parada: 'Colegio',
-                lat: colegio.lat,
-                lng: colegio.lng,
-                orden: 9999
-            });
-        }
+        // A. RECOGIDA (Mañana): Iniciamos desde la posición actual del conductor
+        puntoReferencia = { 
+            lat: normalizarNumero(opciones.conductorLat) || (paradasBase.length > 0 ? paradasBase[0].lat : null), 
+            lng: normalizarNumero(opciones.conductorLng) || (paradasBase.length > 0 ? paradasBase[0].lng : null) 
+        };
     } else {
-        // Sentido Entrega: El Colegio es el PUNTO DE PARTIDA
-        paradas.sort((a, b) => a.orden - b.orden);
+        // B. ENTREGA (Tarde): Iniciamos desde el Colegio
+        puntoReferencia = { lat: colegio.lat, lng: colegio.lng };
+        
+        // El Colegio es el punto de partida en la lista
         if (colegio.lat && colegio.lng) {
-            paradas.unshift({
+            paradasOrdenadas.push({
                 alumno_id: null,
                 nombre: 'Salida: ' + colegio.nombre,
                 parada: 'Colegio',
@@ -384,12 +384,48 @@ const sincronizarPuntosRuta = async (rutaId, client = pool, opciones = {}) => {
         }
     }
 
+    // Algoritmo de Vecino más Cercano
+    let pendientes = [...paradasBase];
+    while (pendientes.length > 0 && puntoReferencia.lat && puntoReferencia.lng) {
+        let indiceMasCercano = -1;
+        let distanciaMinima = Infinity;
+
+        for (let i = 0; i < pendientes.length; i++) {
+            const d = calcularDistancia(puntoReferencia.lat, puntoReferencia.lng, pendientes[i].lat, pendientes[i].lng);
+            if (d < distanciaMinima) {
+                distanciaMinima = d;
+                indiceMasCercano = i;
+            }
+        }
+
+        if (indiceMasCercano !== -1) {
+            const seleccionado = pendientes.splice(indiceMasCercano, 1)[0];
+            paradasOrdenadas.push(seleccionado);
+            // El siguiente punto de referencia es la parada que acabamos de agregar
+            puntoReferencia = { lat: seleccionado.lat, lng: seleccionado.lng };
+        } else {
+            break;
+        }
+    }
+
+    // En recogida, el Colegio es el punto FINAL
+    if (sentido === 'recogida' && colegio.lat && colegio.lng) {
+        paradasOrdenadas.push({
+            alumno_id: null,
+            nombre: 'Llegada: ' + colegio.nombre,
+            parada: 'Colegio',
+            lat: colegio.lat,
+            lng: colegio.lng,
+            orden: 9999
+        });
+    }
+
     // 5. Guardar en la tabla puntos_ruta (la que usa el mapa y el detector de desvíos)
     await client.query(`DELETE FROM puntos_ruta WHERE ruta_id = $1 AND tipo = $2::text`, [rutaId, sentido]);
 
     const puntosInsertados = [];
-    for (let i = 0; i < paradas.length; i++) {
-        const p = paradas[i];
+    for (let i = 0; i < paradasOrdenadas.length; i++) {
+        const p = paradasOrdenadas[i];
         const res = await client.query(
             `INSERT INTO puntos_ruta (ruta_id, alumno_id, tipo, latitud, longitud, orden, nombre_parada)
              VALUES ($1::int, $2::int, $3::text, $4::numeric, $5::numeric, $6::int, $7::text)
