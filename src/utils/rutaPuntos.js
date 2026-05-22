@@ -1,4 +1,8 @@
 const pool = require('../database');
+const { calcularDistancia } = require('./geoUtils');
+const { enviarNotificacionAlumno } = require('./notificaciones');
+
+const entregasNotificadasHoy = new Set(); // Cache en memoria: alumnoId_fecha
 
 const normalizarNumero = (valor) => {
     if (valor === null || valor === undefined || valor === '') return null;
@@ -17,6 +21,68 @@ const normalizarSentidoRuta = (valor) => {
         return 'entrega';
     }
     return sentido;
+};
+
+const verificarEntregasAutomaticas = async (rutaId, lat, lng, io) => {
+    if (!rutaId || !lat || !lng) return;
+
+    try {
+        const hoy = new Date().toISOString().split('T')[0];
+
+        // 1. Buscar alumnos de esta ruta (sentido entrega) que NO han sido entregados hoy
+        const pendientes = await pool.query(
+            `SELECT p.alumno_id, p.latitud, p.longitud, p.nombre_parada, a.nombre as alumno_nombre
+             FROM puntos_ruta p
+             JOIN alumnos a ON a.id = p.alumno_id
+             WHERE p.ruta_id = $1 AND p.tipo = 'entrega' AND p.alumno_id IS NOT NULL
+             AND NOT EXISTS (
+                SELECT 1 FROM eventos_ruta er
+                WHERE er.tipo = 'entregado'
+                  AND er.descripcion = CONCAT('alumnoId:', p.alumno_id)
+                  AND DATE(er.creado_en) = CURRENT_DATE
+             )`,
+            [rutaId]
+        );
+
+        for (const p of pendientes.rows) {
+            const key = `${p.alumno_id}_${hoy}`;
+            if (entregasNotificadasHoy.has(key)) continue;
+
+            const dist = calcularDistancia(lat, lng, Number(p.latitud), Number(p.longitud));
+
+            // Si está a menos de 150 metros
+            if (dist < 150) {
+                entregasNotificadasHoy.add(key);
+                console.log(`[AUTO-ENTREGA] Alumno ${p.alumno_nombre} entregado automáticamente en ${p.nombre_parada}`);
+
+                // A. Registrar en DB
+                await pool.query(
+                    `INSERT INTO eventos_ruta (ruta_id, tipo, descripcion)
+                     VALUES ($1, 'entregado', $2)`,
+                    [rutaId, `alumnoId:${p.alumno_id}`]
+                );
+
+                // B. Notificar al padre
+                enviarNotificacionAlumno(
+                    p.alumno_id,
+                    'Entrega confirmada',
+                    `${p.alumno_nombre} ha sido entregado en su destino (Deteccion GPS).`,
+                    { tipo: 'entrega_automatica', alumnoId: p.alumno_id, rutaId }
+                ).catch(e => console.error('Error enviando push entrega auto:', e.message));
+
+                // C. Emitir vía Socket
+                if (io) {
+                    io.to(`ruta:${rutaId}`).emit('alumno:entregado', {
+                        alumnoId: p.alumno_id,
+                        nombre: p.alumno_nombre,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Error en verificarEntregasAutomaticas:', error.message);
+    }
 };
 
 const normalizarTurnoRuta = (valor) => {
@@ -340,4 +406,6 @@ module.exports = {
     guardarPuntoRutaAlumno,
     sincronizarPuntoAlumno,
     sincronizarPuntosRuta,
+    normalizarSentidoRuta,
+    verificarEntregasAutomaticas,
 };

@@ -9,7 +9,7 @@ dotenv.config();
 const pool = require('./database');
 const { calcularDistancia } = require('./utils/geoUtils');
 const { enviarNotificacionPush } = require('./utils/notificaciones');
-const { sincronizarPuntosRuta } = require('./utils/rutaPuntos');
+const { sincronizarPuntosRuta, normalizarSentidoRuta, verificarEntregasAutomaticas } = require('./utils/rutaPuntos');
 
 const app = express();
 const server = http.createServer(app);
@@ -164,10 +164,17 @@ io.on('connection', (socket) => {
         if (rutaId) {
             io.to(`ruta:${rutaId}`).emit('bus:ubicacion', ubicacionBus);
             
+            const sentidoNormalizado = normalizarSentidoRuta(datos.sentido);
+
+            // 📍 DETECCIÓN DE ENTREGAS AUTOMÁTICAS (Solo en sentido entrega)
+            if (sentidoNormalizado === 'entrega') {
+                verificarEntregasAutomaticas(rutaId, datos.latitude, datos.longitude, io);
+            }
+
             // 📍 DETECCIÓN DE LLEGADA AL COLEGIO (GEOFENCING)
             // Solo si el sentido es 'casa_a_colegio' y no hemos notificado hoy para esta ruta
             const keyLlegada = `${rutaId}_${hoy}`;
-            if (datos.sentido === 'casa_a_colegio' && !llegadasNotificadas[keyLlegada]) {
+            if (sentidoNormalizado === 'recogida' && !llegadasNotificadas[keyLlegada]) {
                 try {
                     const resColegio = await pool.query(
                         `SELECT c.id, c.nombre, c.latitude, c.longitude 

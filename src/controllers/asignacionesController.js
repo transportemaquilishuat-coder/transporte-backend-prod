@@ -1,7 +1,7 @@
 const pool = require('../database');
 const { enviarNotificacionPush, enviarNotificacionAlumno } = require('../utils/notificaciones');
 const { autoNombrarRuta } = require('../utils/geoNaming');
-const { sincronizarPuntoAlumno } = require('../utils/rutaPuntos');
+const { sincronizarPuntoAlumno, normalizarSentidoRuta } = require('../utils/rutaPuntos');
 const { mapearTurnoEstudio } = require('../utils/turnos');
 
 const CONFIG_UI_POR_DEFECTO = {
@@ -75,7 +75,7 @@ const obtenerOCrearRutaConductor = async (conductorId) => {
 
 const alumnosPorConductor = async (req, res) => {
     const conductorId = Number(req.params.conductorId);
-    const { turno, turno_estudio, turnoEstudio } = req.query; 
+    const { turno, turno_estudio, turnoEstudio, sentido } = req.query; 
 
     if (!Number.isInteger(conductorId)) {
         return res.status(400).json({ error: 'conductorId invalido' });
@@ -93,6 +93,7 @@ const alumnosPorConductor = async (req, res) => {
 
         const turnoRaw = turno_estudio || turnoEstudio || turno;
         const turnoMapeado = mapearTurnoEstudio(turnoRaw);
+        const sentidoNormalizado = normalizarSentidoRuta(sentido);
 
         const alumnosResult = await pool.query(
             `SELECT
@@ -105,18 +106,30 @@ const alumnosPorConductor = async (req, res) => {
                 COALESCE(pr.latitude, a.latitude) AS latitude,
                 COALESCE(pr.longitude, a.longitude) AS longitude,
                 a.orden,
-                -- 1. Estado de abordaje (hoy)
+                -- 1. Estado de abordaje (hoy) depende del sentido
                 CASE
-                    WHEN EXISTS (
-                        SELECT 1
-                        FROM eventos_ruta er
-                        WHERE er.tipo = 'abordado'
-                          AND er.descripcion = CONCAT('alumnoId:', a.id)
-                          AND DATE(er.creado_en) = CURRENT_DATE
-                    ) THEN 'abordado'
-                    ELSE 'pendiente'
+                    WHEN $3::text = 'entrega' THEN
+                        CASE
+                            WHEN EXISTS (
+                                SELECT 1 FROM eventos_ruta er
+                                WHERE er.tipo = 'entregado'
+                                  AND er.descripcion = CONCAT('alumnoId:', a.id)
+                                  AND DATE(er.creado_en) = CURRENT_DATE
+                            ) THEN 'entregado'
+                            ELSE 'abordado'
+                        END
+                    ELSE
+                        CASE
+                            WHEN EXISTS (
+                                SELECT 1 FROM eventos_ruta er
+                                WHERE er.tipo = 'abordado'
+                                  AND er.descripcion = CONCAT('alumnoId:', a.id)
+                                  AND DATE(er.creado_en) = CURRENT_DATE
+                            ) THEN 'abordado'
+                            ELSE 'pendiente'
+                        END
                 END AS estado_abordaje,
-                -- 2. InformaciÃ³n de Ausencia (Hoy)
+                -- 2. Información de Ausencia (Hoy)
                 COALESCE((
                     SELECT JSONB_BUILD_OBJECT(
                         'esAusente', (au.estado = 'autorizado'),
@@ -128,12 +141,12 @@ const alumnosPorConductor = async (req, res) => {
                       AND CURRENT_DATE BETWEEN au.fecha AND COALESCE(au.fecha_fin, au.fecha)
                     LIMIT 1
                 ), '{"esAusente": false, "pendienteAutorizacion": false}'::jsonb) as "infoAusencia",
-                -- 3. Detalles de ProgramaciÃ³n Temporal (Hoy)
+                -- 3. Detalles de Programación Temporal (Hoy)
                 pr.nota as "notaProgramacion",
                 (pr.id IS NOT NULL) as "esCambioTemporal",
                 pr.tipo as "turnoProgramado",
                 pr.estado as "estadoCambioTemporal",
-                -- 4. Datos del Padre para contacto rÃ¡pido
+                -- 4. Datos del Padre para contacto rápido
                 u_padre.nombre as "padreNombre",
                 u_padre.telefono as "padreTelefono"
              FROM alumnos a
@@ -153,7 +166,7 @@ const alumnosPorConductor = async (req, res) => {
                )
                AND ($2::text IS NULL OR a.turno_estudio = $2)
             ORDER BY a.orden, a.nombre`,
-            [rutasIds, turnoMapeado]
+            [rutasIds, turnoMapeado, sentidoNormalizado]
         );
 
         res.json({
@@ -167,7 +180,8 @@ const alumnosPorConductor = async (req, res) => {
             totalAlumnos: alumnosResult.rows.length,
             ausentes: alumnosResult.rows.filter((alumno) => alumno.infoAusencia?.esAusente).length,
             configuracionUi,
-            turnoActual: turnoMapeado || 'todos'
+            turnoActual: turnoMapeado || 'todos',
+            sentidoActual: sentidoNormalizado
         });
     } catch (error) {
         console.error('Error alumnosPorConductor:', error.message);
@@ -341,6 +355,7 @@ module.exports = {
     reportarAusencia,
     ausenciasDeLaRuta,
     marcarAbordado,
+    marcarEntregado,
     inscribirAlumnoPorConductor,
     reportarAusenciaMultiple,
     desvincularAlumnoPorConductor,
