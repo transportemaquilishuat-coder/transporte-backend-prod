@@ -6,6 +6,8 @@ const pool = require('../database');
 const { authenticateToken, requireRole } = require('../middleware/auth');
 const { SESSION_EXPIRES_IN, firmarTokenSesion } = require('../utils/authTokens');
 const { generarCodigoAleatorio, normalizarCodigo } = require('../utils/codigos');
+const { mapearTurnoEstudio } = require('../utils/turnos');
+const { sincronizarPuntoAlumno } = require('../utils/rutaPuntos');
 const {
     listarColegiosSuperAdmin,
     crearColegioSuperAdmin,
@@ -271,7 +273,7 @@ const vincularConCodigoHandler = async (req, res) => {
                         campos: faltantes
                     });
                 }
-                const turnoMapeado = alumnoPayload.turnoEstudio;
+                const turnoMapeado = mapearTurnoEstudio(alumnoPayload.turnoEstudio);
 
                 const nuevoAlumnoRes = await client.query(
                     `INSERT INTO alumnos (nombre, grado, padre_id, ruta_id, colegio_id, colegio_nombre, parada, turno_estudio, padre_email, activo)
@@ -291,6 +293,9 @@ const vincularConCodigoHandler = async (req, res) => {
                 studentResponse = nuevoAlumnoRes.rows[0];
                 
                 await client.query(`INSERT INTO alumno_padres (alumno_id, padre_id, rol) VALUES ($1, $2, 'principal') ON CONFLICT DO NOTHING`, [studentResponse.id, req.user.id]);
+                
+                // Sincronizar punto para el nuevo alumno
+                await sincronizarPuntoAlumno(studentResponse.id, client);
             } else {
                 // ESCENARIO 2: Vincular alumnos existentes
                 const hijos = await client.query('SELECT id, nombre FROM alumnos WHERE padre_id = $1', [req.user.id]);

@@ -66,8 +66,14 @@ const resolverDestinoVinculacion = async (client, codigoData) => {
             };
         case 'conductor_padre': {
             // El código apunta al conductor que lo generó
+            // Solo buscamos rutas ACTIVAS para evitar vincular alumnos a rutas obsoletas
             const conductor = await client.query(
-                'SELECT u.id, u.nombre, u.colegio_id, r.id as ruta_id FROM usuarios u LEFT JOIN rutas r ON r.conductor_id = u.id WHERE u.id = $1 AND u.rol = $2 LIMIT 1',
+                `SELECT u.id, u.nombre, u.colegio_id, r.id as ruta_id 
+                 FROM usuarios u 
+                 LEFT JOIN rutas r ON r.conductor_id = u.id AND r.activa = true
+                 WHERE u.id = $1 AND u.rol = $2 
+                 ORDER BY r.creado_en DESC 
+                 LIMIT 1`,
                 [codigoData.entidad_id, 'conductor']
             );
 

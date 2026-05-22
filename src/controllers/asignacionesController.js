@@ -2,6 +2,7 @@ const pool = require('../database');
 const { enviarNotificacionPush, enviarNotificacionAlumno } = require('../utils/notificaciones');
 const { autoNombrarRuta } = require('../utils/geoNaming');
 const { sincronizarPuntoAlumno } = require('../utils/rutaPuntos');
+const { mapearTurnoEstudio } = require('../utils/turnos');
 
 const CONFIG_UI_POR_DEFECTO = {
     mostrarAvisoAbordaje: false,
@@ -91,7 +92,7 @@ const alumnosPorConductor = async (req, res) => {
         const rutasIds = rutas.map((ruta) => ruta.id);
 
         const turnoRaw = turno_estudio || turnoEstudio || turno;
-        const turnoMapeado = (turnoRaw === 'mañana') ? 'matutino' : (turnoRaw === 'tarde') ? 'vespertino' : (turnoRaw || null);
+        const turnoMapeado = mapearTurnoEstudio(turnoRaw);
 
         const alumnosResult = await pool.query(
             `SELECT
@@ -114,7 +115,7 @@ const alumnosPorConductor = async (req, res) => {
                           AND DATE(er.creado_en) = CURRENT_DATE
                     ) THEN 'abordado'
                     ELSE 'pendiente'
-                END AS estado,
+                END AS estado_abordaje,
                 -- 2. InformaciÃ³n de Ausencia (Hoy)
                 COALESCE((
                     SELECT JSONB_BUILD_OBJECT(
@@ -138,11 +139,11 @@ const alumnosPorConductor = async (req, res) => {
              FROM alumnos a
              LEFT JOIN usuarios u_padre ON u_padre.id = a.padre_id
              LEFT JOIN LATERAL (
-                SELECT * FROM programacion_rutas 
-                WHERE alumno_id = a.id AND fecha = CURRENT_DATE
-                AND ($2::text IS NULL OR tipo = $2 OR tipo = 'ambos')
+                SELECT * FROM programacion_rutas sub_pr
+                WHERE sub_pr.alumno_id = a.id AND sub_pr.fecha = CURRENT_DATE
+                AND ($2::text IS NULL OR sub_pr.tipo = $2 OR sub_pr.tipo = 'ambos')
                 -- Nota: El conductor ve cambios aprobados Y pendientes para estar alerta
-                ORDER BY CASE WHEN estado = 'aprobado' THEN 1 ELSE 2 END
+                ORDER BY CASE WHEN sub_pr.estado = 'aprobado' THEN 1 ELSE 2 END
                 LIMIT 1
              ) pr ON true
              WHERE a.activo = true
@@ -164,7 +165,7 @@ const alumnosPorConductor = async (req, res) => {
             })),
             alumnos: alumnosResult.rows,
             totalAlumnos: alumnosResult.rows.length,
-            ausentes: alumnosResult.rows.filter((alumno) => alumno.ausente).length,
+            ausentes: alumnosResult.rows.filter((alumno) => alumno.infoAusencia?.esAusente).length,
             configuracionUi,
             turnoActual: turnoMapeado || 'todos'
         });
@@ -294,15 +295,20 @@ const inscribirAlumnoPorConductor = async (req, res) => {
             padreId = p.rows[0]?.id || null;
         }
 
+        const turnoMapeado = mapearTurnoEstudio(turnoEstudio);
+
         const resultado = await pool.query(
             `INSERT INTO alumnos (nombre, grado, ruta_id, padre_id, padre_email, parada, colegio_id, turno_estudio)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-            [nombre, grado, ruta_id, padreId, emailNormalizado, parada, rutaResult.rows[0].colegio_id, turnoEstudio || 'matutino']
+            [nombre, grado, ruta_id, padreId, emailNormalizado, parada, rutaResult.rows[0].colegio_id, turnoMapeado]
         );
 
         if (padreId) {
             await pool.query('INSERT INTO alumno_padres (alumno_id, padre_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [resultado.rows[0].id, padreId]);
         }
+        
+        // Sincronizar punto para el nuevo alumno
+        await sincronizarPuntoAlumno(resultado.rows[0].id);
 
         res.status(201).json({ mensaje: 'Inscrito', id: resultado.rows[0].id });
     } catch (error) { res.status(500).json({ error: error.message }); }

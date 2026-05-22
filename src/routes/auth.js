@@ -5,7 +5,8 @@ const bcrypt = require('bcryptjs');
 const pool = require('../database');
 const validate = require('deep-email-validator').default;
 const { authenticateToken } = require('../middleware/auth');
-const { SESSION_EXPIRES_IN, firmarTokenSesion } = require('../utils/authTokens');
+const { firmarTokenSesion, SESSION_EXPIRES_IN } = require('../utils/authTokens');
+const { mapearTurnoEstudio } = require('../utils/turnos');
 
 const ROLES_VALIDOS_USUARIO = ['padre', 'conductor', 'admin'];
 
@@ -244,7 +245,7 @@ router.post('/registro', async (req, res) => {
             }
 
             const turnoRaw = turno_estudio || turnoEstudio || 'matutino';
-            const turnoMapeado = (turnoRaw === 'mañana') ? 'matutino' : (turnoRaw === 'tarde') ? 'vespertino' : turnoRaw;
+            const turnoMapeado = mapearTurnoEstudio(turnoRaw);
 
             const alumnoRes = await client.query(
                 `INSERT INTO alumnos (nombre, grado, padre_id, ruta_id, colegio_id, colegio_nombre, turno_estudio, padre_email, parada)

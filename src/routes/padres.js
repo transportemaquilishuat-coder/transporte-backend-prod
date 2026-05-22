@@ -49,7 +49,7 @@ const crearSolicitudCambioPunto = async (client, {
          FROM solicitudes_cambio_punto_recogida
          WHERE alumno_id = $1::int
            AND tipo = $2::text
-           AND estado = 'pendiente'
+           AND solicitudes_cambio_punto_recogida.estado = 'pendiente'
          LIMIT 1`,
         [alumno.id, tipo]
     );
@@ -160,34 +160,35 @@ router.get('/mis-hijos', authenticateToken, requireRole('padre'), async (req, re
                 COALESCE(nu.telefono, u.telefono) as "conductorTelefono",
                 COALESCE(nu.id, u.id) as "conductorId",
                 EXISTS (
-                    SELECT 1 FROM eventos_ruta er 
-                    WHERE er.tipo = 'abordado' 
-                    AND er.descripcion = CONCAT('alumnoId:', a.id)
-                    AND DATE(er.creado_en) = CURRENT_DATE
+                    SELECT 1 FROM eventos_ruta 
+                    WHERE tipo = 'abordado' 
+                    AND descripcion = 'alumnoId:' || a.id
+                    AND DATE(creado_en) = CURRENT_DATE
                 ) as abordado,
                 (pr.id IS NOT NULL) as "tieneProgramacionHoy",
                 EXISTS (
-                    SELECT 1 FROM ausencias au
-                    WHERE au.alumno_id = a.id 
-                      AND au.estado = 'autorizado'
-                      AND CURRENT_DATE BETWEEN au.fecha AND COALESCE(au.fecha_fin, au.fecha)
+                    SELECT 1 FROM ausencias sub_au
+                    WHERE sub_au.alumno_id = a.id 
+                      AND sub_au.estado = 'autorizado'
+                      AND CURRENT_DATE BETWEEN sub_au.fecha AND COALESCE(sub_au.fecha_fin, sub_au.fecha)
                 ) as ausente,
                 -- Promedios semanales (HH:MM)
-                (SELECT TO_CHAR(AVG(creado_en::time - '00:00:00'::time), 'HH24:MI') 
-                 FROM eventos_ruta 
-                 WHERE tipo = 'abordado' AND descripcion = CONCAT('alumnoId:', a.id)
-                   AND creado_en > NOW() - INTERVAL '7 days') as "promedioRecogida",
-                (SELECT TO_CHAR(AVG(creado_en::time - '00:00:00'::time), 'HH24:MI') 
-                 FROM eventos_ruta 
-                 WHERE tipo = 'fin_ruta' AND ruta_id = COALESCE(pr.ruta_id, r.id)
-                   AND creado_en > NOW() - INTERVAL '7 days') as "promedioLlegada"
+                (SELECT TO_CHAR(AVG(sub_er.creado_en::time - '00:00:00'::time), 'HH24:MI') 
+                 FROM eventos_ruta sub_er
+                 WHERE sub_er.tipo = 'abordado' AND sub_er.descripcion = 'alumnoId:' || a.id
+                   AND sub_er.creado_en > NOW() - INTERVAL '7 days') as "promedioRecogida",
+                (SELECT TO_CHAR(AVG(sub_er2.creado_en::time - '00:00:00'::time), 'HH24:MI') 
+                 FROM eventos_ruta sub_er2
+                 WHERE sub_er2.tipo = 'fin_ruta' AND sub_er2.ruta_id = COALESCE(pr.ruta_id, r.id)
+                   AND sub_er2.creado_en > NOW() - INTERVAL '7 days') as "promedioLlegada"
             FROM alumnos a
             JOIN alumno_padres ap ON ap.alumno_id = a.id
             LEFT JOIN LATERAL (
-                SELECT * FROM programacion_rutas 
-                WHERE alumno_id = a.id AND fecha = CURRENT_DATE
-                AND estado = 'aprobado'
-                ORDER BY CASE WHEN tipo = 'ambos' THEN 1 ELSE 2 END
+                SELECT sub_pr.id, sub_pr.ruta_id, sub_pr.parada, sub_pr.latitude, sub_pr.longitude, sub_pr.estado, sub_pr.tipo
+                FROM programacion_rutas sub_pr
+                WHERE sub_pr.alumno_id = a.id AND sub_pr.fecha = CURRENT_DATE
+                AND sub_pr.estado = 'aprobado'
+                ORDER BY CASE WHEN sub_pr.tipo = 'ambos' THEN 1 ELSE 2 END
                 LIMIT 1
             ) pr ON true
             LEFT JOIN rutas r ON r.id = a.ruta_id
