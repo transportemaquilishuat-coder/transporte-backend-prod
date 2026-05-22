@@ -6,6 +6,30 @@ const normalizarNumero = (valor) => {
     return Number.isFinite(numero) ? numero : null;
 };
 
+const normalizarSentidoRuta = (valor) => {
+    const sentido = String(valor || 'recogida').trim().toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+    if (['recogida', 'casa_a_colegio', 'ida', 'manana'].includes(sentido)) {
+        return 'recogida';
+    }
+    if (['entrega', 'colegio_a_casa', 'vuelta', 'tarde'].includes(sentido)) {
+        return 'entrega';
+    }
+    return sentido;
+};
+
+const normalizarTurnoRuta = (valor) => {
+    const turno = String(valor || '').trim().toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+
+    if (!turno || turno === 'todos') return null;
+    if (turno === 'manana') return 'matutino';
+    if (turno === 'tarde') return 'vespertino';
+    return turno;
+};
+
 const sincronizarPuntoAlumno = async (alumnoId, client = pool) => {
     const resultado = await client.query(
         `SELECT id, ruta_id, nombre, parada, latitude, longitude, orden
@@ -92,29 +116,31 @@ const guardarPuntoRutaAlumno = async ({
 const sincronizarPuntosRuta = async (rutaId, client = pool, opciones = {}) => {
     if (!rutaId) return [];
 
-    const { turno = 'matutino', sentido = 'recogida' } = opciones;
+    const turno = normalizarTurnoRuta(opciones.turno || 'matutino');
+    const sentido = normalizarSentidoRuta(opciones.sentido);
 
     // 1. Obtener datos base (Alumnos activos de la ruta)
     // Filtramos alumnos que tengan ausencia AUTORIZADA para hoy
     const alumnosResult = await client.query(
-        `SELECT a.id, a.nombre, a.parada, a.latitude, a.longitude, a.orden,
+        `SELECT a.id, a.nombre, a.parada, a.latitude, a.longitude, a.orden, a.turno_estudio,
                 c.latitude as colegio_lat, c.longitude as colegio_lng, c.nombre as colegio_nombre
          FROM alumnos a
          LEFT JOIN colegios c ON c.id = a.colegio_id
          WHERE a.ruta_id = $1
            AND a.activo = true
+           AND ($2::text IS NULL OR a.turno_estudio = $2::text)
            AND NOT EXISTS (
                SELECT 1 FROM ausencias au
                WHERE au.alumno_id = a.id
                  AND au.estado = 'autorizado'
                  AND CURRENT_DATE BETWEEN au.fecha AND COALESCE(au.fecha_fin, au.fecha)
            )`,
-        [rutaId]
+        [rutaId, turno]
     );
 
     if (alumnosResult.rows.length === 0) {
         // Si no hay alumnos, limpiamos la ruta y salimos
-        await client.query(`DELETE FROM puntos_ruta WHERE ruta_id = $1`, [rutaId]);
+        await client.query(`DELETE FROM puntos_ruta WHERE ruta_id = $1 AND tipo = $2::text`, [rutaId, sentido]);
         return [];
     }
 
@@ -124,28 +150,130 @@ const sincronizarPuntosRuta = async (rutaId, client = pool, opciones = {}) => {
         nombre: alumnosResult.rows[0].colegio_nombre || 'Colegio'
     };
 
-    // 2. Buscar cambios temporales APROBADOS para hoy
+    // 2. Buscar cambios temporales APROBADOS para hoy.
+    const alumnosIdsBase = alumnosResult.rows.map((alumno) => alumno.id);
     const cambiosResult = await client.query(
-        `SELECT * FROM programacion_rutas
-         WHERE ruta_id = $1 AND fecha = CURRENT_DATE AND estado = 'aprobado'`,
-        [rutaId]
+        `SELECT *
+         FROM programacion_rutas
+         WHERE fecha = CURRENT_DATE
+           AND estado = 'aprobado'
+           AND (ruta_id = $1 OR alumno_id = ANY($2::int[]))`,
+        [rutaId, alumnosIdsBase]
     );
-    const cambiosMap = new Map(cambiosResult.rows.map(c => [Number(c.alumno_id), c]));
+
+    const cambiosMap = new Map();
+    const rutaCambioAlumno = new Map();
+    for (const cambio of cambiosResult.rows) {
+        const tipoCambio = normalizarSentidoRuta(cambio.tipo);
+        if (cambio.ruta_id) {
+            rutaCambioAlumno.set(Number(cambio.alumno_id), Number(cambio.ruta_id));
+        }
+        if (cambio.tipo === 'ambos' || tipoCambio === sentido) {
+            cambiosMap.set(Number(cambio.alumno_id), cambio);
+        }
+    }
+
+    const entregaResult = await client.query(
+        `SELECT alumno_id, ruta_id, nombre_parada, latitud, longitud, orden
+         FROM puntos_ruta
+         WHERE ruta_id = $1
+           AND tipo = 'entrega'
+           AND alumno_id = ANY($2::int[])`,
+        [rutaId, alumnosIdsBase]
+    );
+    const entregasMap = new Map(entregaResult.rows.map((p) => [Number(p.alumno_id), p]));
+
+    const alumnosRutaActual = alumnosResult.rows.filter((alumno) => {
+        const rutaCambio = rutaCambioAlumno.get(Number(alumno.id));
+        return !rutaCambio || rutaCambio === Number(rutaId);
+    });
+
+    const alumnosEntrantesResult = await client.query(
+        `SELECT a.id, a.nombre, a.parada, a.latitude, a.longitude, a.orden, a.turno_estudio,
+                c.latitude as colegio_lat, c.longitude as colegio_lng, c.nombre as colegio_nombre
+         FROM programacion_rutas pr
+         INNER JOIN alumnos a ON a.id = pr.alumno_id
+         LEFT JOIN colegios c ON c.id = a.colegio_id
+         WHERE pr.ruta_id = $1
+           AND pr.fecha = CURRENT_DATE
+           AND pr.estado = 'aprobado'
+           AND a.ruta_id <> $1
+           AND a.activo = true
+           AND ($2::text IS NULL OR a.turno_estudio = $2::text)
+           AND (pr.tipo = 'ambos' OR pr.tipo = $3::text OR pr.tipo = $4::text)
+           AND NOT EXISTS (
+               SELECT 1 FROM ausencias au
+               WHERE au.alumno_id = a.id
+                 AND au.estado = 'autorizado'
+                 AND CURRENT_DATE BETWEEN au.fecha AND COALESCE(au.fecha_fin, au.fecha)
+           )`,
+        [
+            rutaId,
+            turno,
+            sentido,
+            sentido === 'recogida' ? 'casa_a_colegio' : 'colegio_a_casa',
+        ]
+    );
+
+    for (const alumno of alumnosEntrantesResult.rows) {
+        alumnosRutaActual.push(alumno);
+    }
+
+    if (alumnosEntrantesResult.rows.length > 0) {
+        const alumnosIdsEntrantes = alumnosEntrantesResult.rows.map((alumno) => alumno.id);
+        const cambiosEntrantes = await client.query(
+            `SELECT *
+             FROM programacion_rutas
+             WHERE ruta_id = $1
+               AND fecha = CURRENT_DATE
+               AND estado = 'aprobado'
+               AND alumno_id = ANY($2::int[])`,
+            [rutaId, alumnosIdsEntrantes]
+        );
+        for (const cambio of cambiosEntrantes.rows) {
+            cambiosMap.set(Number(cambio.alumno_id), cambio);
+        }
+
+        const entregaEntranteResult = await client.query(
+            `SELECT alumno_id, ruta_id, nombre_parada, latitud, longitud, orden
+             FROM puntos_ruta
+             WHERE tipo = 'entrega'
+               AND alumno_id = ANY($1::int[])`,
+            [alumnosIdsEntrantes]
+        );
+        for (const punto of entregaEntranteResult.rows) {
+            entregasMap.set(Number(punto.alumno_id), punto);
+        }
+    }
 
     // 3. Construir lista de paradas "Vivas"
-    let paradas = alumnosResult.rows.map(alumno => {
+    let paradas = alumnosRutaActual.map(alumno => {
         const cambio = cambiosMap.get(Number(alumno.id));
         
         // Si hay un cambio aprobado que aplique a este sentido o sea 'ambos'
-        if (cambio && (cambio.tipo === 'ambos' || cambio.tipo === sentido)) {
+        if (cambio) {
             return {
                 alumno_id: alumno.id,
                 nombre: alumno.nombre,
                 parada: cambio.parada || alumno.parada,
-                lat: normalizarNumero(cambio.latitude),
-                lng: normalizarNumero(cambio.longitude),
+                lat: normalizarNumero(cambio.latitude) ?? normalizarNumero(alumno.latitude),
+                lng: normalizarNumero(cambio.longitude) ?? normalizarNumero(alumno.longitude),
                 orden: alumno.orden || 1000
             };
+        }
+
+        if (sentido === 'entrega') {
+            const entrega = entregasMap.get(Number(alumno.id));
+            if (entrega) {
+                return {
+                    alumno_id: alumno.id,
+                    nombre: alumno.nombre,
+                    parada: entrega.nombre_parada || alumno.parada,
+                    lat: normalizarNumero(entrega.latitud),
+                    lng: normalizarNumero(entrega.longitud),
+                    orden: entrega.orden || alumno.orden || 1000
+                };
+            }
         }
 
         return {
@@ -178,10 +306,20 @@ const sincronizarPuntosRuta = async (rutaId, client = pool, opciones = {}) => {
     } else {
         // Sentido Entrega: El Colegio es el PUNTO DE PARTIDA
         paradas.sort((a, b) => a.orden - b.orden);
+        if (colegio.lat && colegio.lng) {
+            paradas.unshift({
+                alumno_id: null,
+                nombre: 'Salida: ' + colegio.nombre,
+                parada: 'Colegio',
+                lat: colegio.lat,
+                lng: colegio.lng,
+                orden: 0
+            });
+        }
     }
 
     // 5. Guardar en la tabla puntos_ruta (la que usa el mapa y el detector de desvíos)
-    await client.query(`DELETE FROM puntos_ruta WHERE ruta_id = $1`, [rutaId]);
+    await client.query(`DELETE FROM puntos_ruta WHERE ruta_id = $1 AND tipo = $2::text`, [rutaId, sentido]);
 
     const puntosInsertados = [];
     for (let i = 0; i < paradas.length; i++) {

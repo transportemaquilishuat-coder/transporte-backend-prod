@@ -40,6 +40,94 @@ const prepararEsquemaUnaVez = async () => {
         `);
 
         await client.query(`
+            ALTER TABLE colegios ADD COLUMN IF NOT EXISTS latitude DECIMAL(10,8);
+            ALTER TABLE colegios ADD COLUMN IF NOT EXISTS longitude DECIMAL(11,8);
+            ALTER TABLE colegios ADD COLUMN IF NOT EXISTS geo_origen VARCHAR(20);
+        `);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS ausencias (
+                id SERIAL PRIMARY KEY,
+                alumno_id INTEGER REFERENCES alumnos(id),
+                padre_id INTEGER REFERENCES usuarios(id),
+                motivo TEXT,
+                fecha DATE DEFAULT CURRENT_DATE,
+                fecha_fin DATE,
+                hora TIME DEFAULT CURRENT_TIME,
+                estado VARCHAR(20) DEFAULT 'pendiente',
+                respuesta_conductor TEXT,
+                respondido_at TIMESTAMP,
+                creado_en TIMESTAMP DEFAULT NOW()
+            );
+
+            ALTER TABLE ausencias ADD COLUMN IF NOT EXISTS fecha_fin DATE;
+            ALTER TABLE ausencias ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'pendiente';
+            ALTER TABLE ausencias ADD COLUMN IF NOT EXISTS respuesta_conductor TEXT;
+            ALTER TABLE ausencias ADD COLUMN IF NOT EXISTS respondido_at TIMESTAMP;
+        `);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS eventos_ruta (
+                id SERIAL PRIMARY KEY,
+                ruta_id INTEGER REFERENCES rutas(id),
+                conductor_id INTEGER REFERENCES usuarios(id),
+                tipo VARCHAR(50),
+                descripcion TEXT,
+                latitud DECIMAL(10,8),
+                longitud DECIMAL(11,8),
+                creado_en TIMESTAMP DEFAULT NOW()
+            );
+
+            ALTER TABLE eventos_ruta ADD COLUMN IF NOT EXISTS conductor_id INTEGER REFERENCES usuarios(id);
+            ALTER TABLE eventos_ruta ADD COLUMN IF NOT EXISTS latitud DECIMAL(10,8);
+            ALTER TABLE eventos_ruta ADD COLUMN IF NOT EXISTS longitud DECIMAL(11,8);
+        `);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS programacion_rutas (
+                id SERIAL PRIMARY KEY,
+                alumno_id INTEGER REFERENCES alumnos(id) ON DELETE CASCADE,
+                fecha DATE NOT NULL,
+                ruta_id INTEGER REFERENCES rutas(id) ON DELETE SET NULL,
+                parada VARCHAR(150),
+                latitude DECIMAL(10,8),
+                longitude DECIMAL(11,8),
+                tipo VARCHAR(20) DEFAULT 'ambos',
+                nota TEXT,
+                estado VARCHAR(20) DEFAULT 'pendiente',
+                respuesta_conductor TEXT,
+                respondido_at TIMESTAMP,
+                creado_por INTEGER REFERENCES usuarios(id),
+                creado_en TIMESTAMP DEFAULT NOW()
+            );
+
+            ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS ruta_id INTEGER REFERENCES rutas(id) ON DELETE SET NULL;
+            ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS parada VARCHAR(150);
+            ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS latitude DECIMAL(10,8);
+            ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS longitude DECIMAL(11,8);
+            ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'ambos';
+            ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS nota TEXT;
+            ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'pendiente';
+            ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS respuesta_conductor TEXT;
+            ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS respondido_at TIMESTAMP;
+            ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS creado_por INTEGER REFERENCES usuarios(id);
+            ALTER TABLE programacion_rutas ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT NOW();
+
+            UPDATE programacion_rutas SET tipo = 'ambos' WHERE tipo IS NULL;
+            UPDATE programacion_rutas SET estado = 'pendiente' WHERE estado IS NULL;
+
+            DELETE FROM programacion_rutas vieja
+            USING programacion_rutas nueva
+            WHERE vieja.id < nueva.id
+              AND vieja.alumno_id = nueva.alumno_id
+              AND vieja.fecha = nueva.fecha
+              AND vieja.tipo = nueva.tipo;
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_programacion_rutas_alumno_fecha_tipo
+            ON programacion_rutas (alumno_id, fecha, tipo);
+        `);
+
+        await client.query(`
             CREATE TABLE IF NOT EXISTS alumno_padres (
                 id SERIAL PRIMARY KEY,
                 alumno_id INTEGER REFERENCES alumnos(id) ON DELETE CASCADE,
@@ -94,6 +182,11 @@ const prepararEsquemaUnaVez = async () => {
 
             ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS alumno_id INTEGER REFERENCES alumnos(id);
             ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'recogida';
+            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS latitud DECIMAL(10,8);
+            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS longitud DECIMAL(11,8);
+            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS orden INTEGER;
+            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS nombre_parada VARCHAR(100);
+            ALTER TABLE puntos_ruta ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT NOW();
             
             ALTER TABLE puntos_ruta ALTER COLUMN latitud DROP NOT NULL;
             ALTER TABLE puntos_ruta ALTER COLUMN longitud DROP NOT NULL;
@@ -114,6 +207,20 @@ const prepararEsquemaUnaVez = async () => {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_puntos_ruta_alumno_tipo
             ON puntos_ruta (alumno_id, tipo)
             WHERE alumno_id IS NOT NULL;
+        `);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS historial_ubicaciones (
+                id SERIAL PRIMARY KEY,
+                ruta_id INTEGER REFERENCES rutas(id) ON DELETE CASCADE,
+                conductor_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
+                latitud DECIMAL(10,8) NOT NULL,
+                longitud DECIMAL(11,8) NOT NULL,
+                sentido VARCHAR(50),
+                creado_en TIMESTAMP DEFAULT NOW()
+            );
+
+            ALTER TABLE historial_ubicaciones ADD COLUMN IF NOT EXISTS sentido VARCHAR(50);
         `);
     } finally {
         client.release();
