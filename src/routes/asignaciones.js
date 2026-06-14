@@ -9,5 +9,6 @@ router.post('/ausencia', ctrl.reportarAusencia);
 router.post('/ausencia-multiple', ctrl.reportarAusenciaMultiple);
 router.get('/ausencias/:rutaId', ctrl.ausenciasDeLaRuta);
 router.post('/abordar', ctrl.marcarAbordado);
+router.post('/entregar', ctrl.marcarEntregado);
 
 module.exports = router;

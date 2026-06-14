@@ -336,7 +336,7 @@ const sincronizarPuntosRuta = async (rutaId, client = pool, opciones = {}) => {
                     nombre: alumno.nombre,
                     parada: entrega.nombre_parada || alumno.parada,
                     lat: normalizarNumero(entrega.latitud),
-                    lng: normalizarNumero(longitud),
+                    lng: normalizarNumero(entrega.longitud),
                     orden: entrega.orden || alumno.orden || 1000
                 };
             }
@@ -406,6 +406,12 @@ const sincronizarPuntosRuta = async (rutaId, client = pool, opciones = {}) => {
         } else {
             break;
         }
+    }
+
+    // Fallback: Si quedaron paradas pendientes (porque no hubo punto de referencia GPS), 
+    // las agregamos al final en su orden original para no perder datos.
+    if (pendientes.length > 0) {
+        paradasOrdenadas = [...paradasOrdenadas, ...pendientes];
     }
 
     // En recogida, el Colegio es el punto FINAL

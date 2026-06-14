@@ -204,6 +204,12 @@ const prepararEsquemaUnaVez = async () => {
             ON solicitudes_cambio_punto_recogida (alumno_id, tipo)
             WHERE estado = 'pendiente';
 
+            DELETE FROM puntos_ruta vieja
+            USING puntos_ruta nueva
+            WHERE vieja.id < nueva.id
+              AND vieja.alumno_id = nueva.alumno_id
+              AND vieja.tipo = nueva.tipo;
+
             CREATE UNIQUE INDEX IF NOT EXISTS idx_puntos_ruta_alumno_tipo
             ON puntos_ruta (alumno_id, tipo)
             WHERE alumno_id IS NOT NULL;

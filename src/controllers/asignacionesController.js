@@ -309,6 +309,37 @@ const marcarAbordado = async (req, res) => {
     } catch (error) { res.status(500).json({ error: 'Error' }); }
 };
 
+const marcarEntregado = async (req, res) => {
+    const { alumnoId } = req.body;
+    if (!alumnoId) return res.status(400).json({ error: 'alumnoId requerido' });
+
+    try {
+        const alumnoResult = await pool.query('SELECT id, nombre, ruta_id FROM alumnos WHERE id = $1', [alumnoId]);
+        if (alumnoResult.rows.length === 0) return res.status(404).json({ error: 'No encontrado' });
+        const alumno = alumnoResult.rows[0];
+
+        await pool.query(
+            `INSERT INTO eventos_ruta (ruta_id, tipo, descripcion)
+             VALUES ($1, 'entregado', $2)`,
+            [alumno.ruta_id, `alumnoId:${alumno.id}`]
+        );
+
+        enviarNotificacionAlumno(alumno.id, 'Entrega confirmada', `${alumno.nombre} ha sido entregado.`).catch(() => {});
+
+        if (req.io && alumno.ruta_id) {
+            req.io.to(`ruta:${alumno.ruta_id}`).emit('alumno:entregado', { 
+                alumnoId: alumno.id,
+                nombre: alumno.nombre,
+                timestamp: new Date().toISOString()
+            });
+        }
+        res.json({ mensaje: 'Marcado como entregado' });
+    } catch (error) { 
+        console.error('Error marcarEntregado:', error.message);
+        res.status(500).json({ error: 'Error' }); 
+    }
+};
+
 const inscribirAlumnoPorConductor = async (req, res) => {
     const conductorId = Number(req.params.conductorId);
     const { nombre, grado, ruta_id, padreEmail, parada, turnoEstudio } = req.body;
