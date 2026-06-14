@@ -38,9 +38,11 @@ const obtenerConfiguracionUi = async () => {
 
 const obtenerOCrearRutaConductor = async (conductorId) => {
     const rutasResult = await pool.query(
-        `SELECT r.id, r.nombre, r.conductor_id AS "conductorId", u.nombre AS conductor_nombre
+        `SELECT r.id, r.nombre, r.conductor_id AS "conductorId", u.nombre AS conductor_nombre,
+                c.latitude AS colegio_latitude, c.longitude AS colegio_longitude, c.nombre AS colegio_nombre
          FROM rutas r
          LEFT JOIN usuarios u ON u.id = r.conductor_id
+         LEFT JOIN colegios c ON c.id = r.colegio_id
          WHERE r.conductor_id = $1 AND r.activa = true
          ORDER BY r.nombre`,
         [conductorId]
@@ -60,6 +62,16 @@ const obtenerOCrearRutaConductor = async (conductorId) => {
     }
 
     const conductor = usuario.rows[0];
+    
+    // Obtener info del colegio para la nueva ruta si existe
+    let colegioInfo = { latitude: null, longitude: null, nombre: null };
+    if (conductor.colegio_id) {
+        const cResult = await pool.query('SELECT latitude, longitude, nombre FROM colegios WHERE id = $1', [conductor.colegio_id]);
+        if (cResult.rows.length > 0) {
+            colegioInfo = cResult.rows[0];
+        }
+    }
+
     const nuevaRuta = await pool.query(
         `INSERT INTO rutas (nombre, conductor_id, colegio_id, activa)
          VALUES ($1, $2, $3, true)
@@ -70,6 +82,9 @@ const obtenerOCrearRutaConductor = async (conductorId) => {
     return nuevaRuta.rows.map((ruta) => ({
         ...ruta,
         conductor_nombre: conductor.nombre,
+        colegio_latitude: colegioInfo.latitude,
+        colegio_longitude: colegioInfo.longitude,
+        colegio_nombre: colegioInfo.nombre
     }));
 };
 
@@ -160,10 +175,7 @@ const alumnosPorConductor = async (req, res) => {
                 LIMIT 1
              ) pr ON true
              WHERE a.activo = true
-               AND (
-                 (pr.id IS NULL AND a.ruta_id = ANY($1::int[])) OR
-                 (pr.id IS NOT NULL AND (pr.ruta_id = ANY($1::int[]) OR a.ruta_id = ANY($1::int[])))
-               )
+               AND COALESCE(pr.ruta_id, a.ruta_id) = ANY($1::int[])
                AND ($2::text IS NULL OR a.turno_estudio = $2)
             ORDER BY a.orden, a.nombre`,
             [rutasIds, turnoMapeado, sentidoNormalizado]
@@ -175,6 +187,9 @@ const alumnosPorConductor = async (req, res) => {
                 nombre: ruta.nombre,
                 conductorId: ruta.conductorId,
                 conductor_nombre: ruta.conductor_nombre,
+                colegio_latitude: ruta.colegio_latitude,
+                colegio_longitude: ruta.colegio_longitude,
+                colegio_nombre: ruta.colegio_nombre
             })),
             alumnos: alumnosResult.rows,
             totalAlumnos: alumnosResult.rows.length,
